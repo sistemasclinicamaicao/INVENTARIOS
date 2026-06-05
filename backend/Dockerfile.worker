@@ -1,5 +1,5 @@
 # Worker Bull/Redis (opcional en Easypanel como segundo servicio)
-# Mismas variables DATABASE_URL, REDIS_URL, SMTP, HR_* que la API
+# Build context: raíz del repo — docker build -f backend/Dockerfile.worker -t clinica-worker .
 
 FROM node:20-alpine AS builder
 
@@ -7,10 +7,10 @@ WORKDIR /app
 
 RUN apk add --no-cache python3 make g++
 
-COPY package.json package-lock.json ./
+COPY backend/package.json backend/package-lock.json ./
 RUN npm ci
 
-COPY . .
+COPY backend/ .
 RUN npm run build
 RUN npm prune --omit=dev
 

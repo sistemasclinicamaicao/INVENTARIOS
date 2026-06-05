@@ -1,15 +1,16 @@
 # Producción Nuxt 3 SSR — Easypanel / Docker
-# Build context: carpeta frontend/
+# Build context: raíz del repo (Easypanel: Dockerfile = frontend/Dockerfile, Root = /)
+# Local: docker build -f frontend/Dockerfile -t clinica-frontend .
 # Proxy /api/v1 → backend vía NUXT_API_PROXY en runtime
 
 FROM node:20-alpine AS builder
 
 WORKDIR /app
 
-COPY package.json package-lock.json ./
+COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci
 
-COPY . .
+COPY frontend/ .
 
 ENV NODE_ENV=production
 ENV NUXT_TELEMETRY_DISABLED=1

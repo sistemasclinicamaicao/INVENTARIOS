@@ -1,6 +1,7 @@
 # Producción — Easypanel / Docker
-# Build context: carpeta backend/
-# Puerto interno: 3000 (Easypanel asigna PORT; NestJS lee PORT o API_PORT)
+# Build context: raíz del repo (Easypanel: Dockerfile = backend/Dockerfile, Root = /)
+# Local: docker build -f backend/Dockerfile -t clinica-api .
+# Puerto interno: 3000
 
 FROM node:20-alpine AS builder
 
@@ -8,10 +9,10 @@ WORKDIR /app
 
 RUN apk add --no-cache python3 make g++
 
-COPY package.json package-lock.json ./
+COPY backend/package.json backend/package-lock.json ./
 RUN npm ci
 
-COPY . .
+COPY backend/ .
 RUN npm run build
 RUN npm prune --omit=dev
 
