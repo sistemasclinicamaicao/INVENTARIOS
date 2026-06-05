@@ -1,0 +1,9 @@
+@import '@flaticon/flaticon-uicons/css/regular/rounded.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  @apply antialiased;
+}

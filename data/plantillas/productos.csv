@@ -1,0 +1,2 @@
+codigo;nombre;descripcion;unidad_base;es_farmacia;requiere_lote;es_controlado;stock_minimo;codigo_barras
+;Ejemplo: reemplace esta fila con sus productos reales;Caja x 100;TAB;SI;SI;NO;100;EAN0000000001

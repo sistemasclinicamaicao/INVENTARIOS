@@ -1,0 +1,120 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: clinica_erp_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-clinica}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-clinica_secret}
+      POSTGRES_DB: ${POSTGRES_DB:-clinica_erp}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C.UTF-8"
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+    ports:
+      - "${POSTGRES_PORT:-5434}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./backend/migrations/001_initial_schema.sql:/docker-entrypoint-initdb.d/001_initial_schema.sql:ro
+      - ./backend/migrations/004_suppliers.sql:/docker-entrypoint-initdb.d/004_suppliers.sql:ro
+      - ./backend/migrations/005_rbac_permissions.sql:/docker-entrypoint-initdb.d/005_rbac_permissions.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-clinica} -d ${POSTGRES_DB:-clinica_erp}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: clinica_erp_redis
+    restart: unless-stopped
+    ports:
+      - "${REDIS_PORT:-6380}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: clinica_erp_api
+    restart: unless-stopped
+    command: npm run start:prod
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      API_PORT: ${API_PORT:-3050}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-clinica}:${POSTGRES_PASSWORD:-clinica_secret}@postgres:5432/${POSTGRES_DB:-clinica_erp}
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: ${JWT_SECRET:-change_me_in_production}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-15m}
+      JWT_REFRESH_EXPIRES_IN: ${JWT_REFRESH_EXPIRES_IN:-7d}
+      OTP_TTL_SECONDS: ${OTP_TTL_SECONDS:-300}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+      SMTP_FROM: ${SMTP_FROM:-noreply@clinica.local}
+      HR_API_URL: ${HR_API_URL:-http://host.docker.internal:3999/mock/hr}
+      HR_API_KEY: ${HR_API_KEY:-dev-key}
+      HIS_WEBHOOK_SECRET: ${HIS_WEBHOOK_SECRET:-dev-his-secret}
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:3010}
+    ports:
+      - "${API_PORT:-3050}:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+      - /app/node_modules
+
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: clinica_erp_worker
+    restart: unless-stopped
+    command: npm run start:worker
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://${POSTGRES_USER:-clinica}:${POSTGRES_PASSWORD:-clinica_secret}@postgres:5432/${POSTGRES_DB:-clinica_erp}
+      REDIS_URL: redis://redis:6379
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+      SMTP_FROM: ${SMTP_FROM:-noreply@clinica.local}
+      HR_API_URL: ${HR_API_URL:-http://host.docker.internal:3999/mock/hr}
+      HR_API_KEY: ${HR_API_KEY:-dev-key}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+      - /app/node_modules
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: clinica_erp_frontend
+    restart: unless-stopped
+    environment:
+      NUXT_PUBLIC_API_BASE: ${NUXT_PUBLIC_API_BASE:-http://localhost:3050/api/v1}
+      FRONTEND_PORT: ${FRONTEND_PORT:-3010}
+    ports:
+      - "${FRONTEND_PORT:-3010}:3010"
+    depends_on:
+      - api
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+
+volumes:
+  pgdata:
