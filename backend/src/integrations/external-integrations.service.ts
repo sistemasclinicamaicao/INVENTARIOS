@@ -883,7 +883,47 @@ export class ExternalIntegrationsService {
       portalMetadataError: posPortal.error,
     });
 
+    const [krystalosIntegration] = await this.dataSource.query<
+      { name: string; baseUrl: string }[]
+    >(
+      `SELECT name, base_url AS "baseUrl"
+       FROM external_integrations
+       WHERE is_active = TRUE
+         AND integration_kind = 'REST_QUERY'
+         AND (
+           base_url ILIKE '%/medicamentos%'
+           OR name ILIKE '%MEDICAMENTOS KRYSTALOS%'
+         )
+       ORDER BY updated_at DESC
+       LIMIT 1`,
+    );
+    items.push({
+      key: 'KRYSTALOS',
+      label: 'Medicamentos Krystalos',
+      datasetId: krystalosIntegration?.name ?? 'API REST',
+      rowsImported: this.krystalosRowsCache?.rows.length ?? null,
+      importedAt: this.krystalosRowsCache
+        ? new Date(this.krystalosRowsCache.fetchedAt).toISOString()
+        : null,
+      portalUpdatedAt: null,
+    });
+
     return { items };
+  }
+
+  /** Refresca caché de medicamentos Krystalos desde la integración REST activa. */
+  async syncKrystalosMedicamentos() {
+    const fetched = await this.fetchKrystalosMedicamentosRows(true);
+    const count = fetched.rows.length;
+    return {
+      ok: true,
+      message: `${count.toLocaleString()} medicamentos Krystalos actualizados desde API`,
+      rowsImported: count,
+      integrationName: fetched.integrationName,
+      url: fetched.url,
+      httpStatus: fetched.httpStatus,
+      durationMs: fetched.durationMs,
+    };
   }
 
   /** Sincroniza un solo listado INVIMA (reemplaza solo ese list_type). */

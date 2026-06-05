@@ -215,6 +215,12 @@ export class IntegrationsController {
   }
 
   @RequirePermissions('admin.users')
+  @Post('external/rest/sync-krystalos-medicamentos')
+  syncKrystalosMedicamentos() {
+    return this.externalIntegrations.syncKrystalosMedicamentos();
+  }
+
+  @RequirePermissions('admin.users')
   @Post('external/socrata/sync-invimaf/:listType')
   syncInvimaByListType(
     @Param('listType') listType: string,

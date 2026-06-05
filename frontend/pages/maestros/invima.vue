@@ -112,7 +112,8 @@ const syncAllProgress = ref('')
 const syncLoadingAny = computed(() =>
   syncAllRunning.value ||
   INVIMA_LIST_TYPE_ORDER.some((lt) => syncState.value[lt]?.loading) ||
-  posSyncState.value.loading,
+  posSyncState.value.loading ||
+  krystalosSyncState.value.loading,
 )
 
 interface ListSyncState {
@@ -127,6 +128,7 @@ const syncState = ref<Record<InvimaPresetListType, ListSyncState>>(
   ) as Record<InvimaPresetListType, ListSyncState>,
 )
 const posSyncState = ref<ListSyncState>({ loading: false, message: '', ok: null })
+const krystalosSyncState = ref<ListSyncState>({ loading: false, message: '', ok: null })
 const expiredModalOpen = ref(false)
 const expiredModalItems = ref<ExpiredInvimaItem[]>([])
 
@@ -250,6 +252,7 @@ async function loadSyncCatalog() {
 }
 
 function syncCatalogRowLabel(item: SyncCatalogItem): string {
+  if (item.key === 'KRYSTALOS') return item.label
   if (item.listType) return listLabels[item.listType] ?? item.label
   return item.label
 }
@@ -553,6 +556,58 @@ function krystalosNextPage() {
     krystalosPage.value++
     loadKrystalos(false)
   }
+}
+
+async function runSyncKrystalos(openView = true): Promise<boolean> {
+  krystalosSyncState.value = { loading: true, message: 'Sincronizando…', ok: null }
+
+  const { data, error: err } = await fetchApi<{
+    ok: boolean
+    message?: string
+    rowsImported?: number
+  }>('/integrations/external/rest/sync-krystalos-medicamentos', {
+    method: 'POST',
+    body: {},
+  })
+
+  if (err) {
+    krystalosSyncState.value = { loading: false, message: err, ok: false }
+    error.value = err
+    return false
+  }
+
+  krystalosSyncState.value = {
+    loading: false,
+    message: data?.message ?? 'Completado',
+    ok: data?.ok ?? false,
+  }
+
+  if (data?.ok) {
+    syncMsg.value = data.message ?? 'Medicamentos Krystalos actualizados'
+    await loadSyncCatalog()
+    if (openView) {
+      mainTab.value = 'krystalos'
+      await loadKrystalos(true, false)
+    }
+    return true
+  }
+
+  return false
+}
+
+async function syncKrystalosMedicamentos() {
+  if (
+    !confirm(
+      '¿Sincronizar catálogo «Medicamentos Krystalos» desde la API REST configurada?\n\n' +
+        'Se actualiza la caché del servidor y se abrirá la vista Krystalos.',
+    )
+  ) {
+    return
+  }
+
+  syncMsg.value = ''
+  error.value = ''
+  await runSyncKrystalos(true)
 }
 
 type PosSearchResult = KrystalosSearchResult
@@ -1107,7 +1162,7 @@ const estadosActiveFiltersCount = computed(() => {
               v-for="item in syncCatalog"
               :key="item.key"
               class="hover:bg-indigo-50/30 transition-colors"
-              :class="item.key === 'POS' ? 'border-t border-slate-200' : ''"
+              :class="item.key === 'POS' || item.key === 'KRYSTALOS' ? 'border-t border-slate-200' : ''"
             >
               <td class="px-4 py-3.5 font-medium text-slate-900">
                 {{ syncCatalogRowLabel(item) }}
@@ -1125,22 +1180,46 @@ const estadosActiveFiltersCount = computed(() => {
                 {{ formatBatchDate(item.importedAt ?? undefined) }}
               </td>
               <td class="px-4 py-3.5 text-slate-600 whitespace-nowrap">
-                <span
-                  :title="item.portalMetadataError"
-                  :class="item.portalMetadataError ? 'text-amber-700' : ''"
-                >
-                  {{ formatBatchDate(item.portalUpdatedAt ?? undefined) }}
-                </span>
-                <span
-                  v-if="isPortalNewer(item)"
-                  class="ml-1.5 inline-flex text-[10px] font-medium px-1.5 py-0.5 rounded bg-amber-100 text-amber-800"
-                  title="El portal tiene datos más recientes que tu última carga local"
-                >
-                  Portal más reciente
-                </span>
+                <template v-if="item.key === 'KRYSTALOS'">
+                  <span class="text-slate-400">—</span>
+                </template>
+                <template v-else>
+                  <span
+                    :title="item.portalMetadataError"
+                    :class="item.portalMetadataError ? 'text-amber-700' : ''"
+                  >
+                    {{ formatBatchDate(item.portalUpdatedAt ?? undefined) }}
+                  </span>
+                  <span
+                    v-if="isPortalNewer(item)"
+                    class="ml-1.5 inline-flex text-[10px] font-medium px-1.5 py-0.5 rounded bg-amber-100 text-amber-800"
+                    title="El portal tiene datos más recientes que tu última carga local"
+                  >
+                    Portal más reciente
+                  </span>
+                </template>
               </td>
               <td class="px-4 py-3.5">
-                <template v-if="item.key === 'POS'">
+                <template v-if="item.key === 'KRYSTALOS'">
+                  <span
+                    v-if="krystalosSyncState.loading"
+                    class="text-xs text-indigo-600 font-medium"
+                  >
+                    Sincronizando…
+                  </span>
+                  <span
+                    v-else-if="krystalosSyncState.message"
+                    class="text-xs"
+                    :class="krystalosSyncState.ok === false ? 'text-red-600' : 'text-emerald-700'"
+                  >
+                    {{ krystalosSyncState.message }}
+                  </span>
+                  <span v-else-if="item.importedAt" class="text-xs text-slate-400">
+                    Al día
+                  </span>
+                  <span v-else class="text-xs text-amber-700">Sin cargar</span>
+                </template>
+                <template v-else-if="item.key === 'POS'">
                   <span
                     v-if="posSyncState.loading"
                     class="text-xs text-indigo-600 font-medium"
@@ -1181,7 +1260,16 @@ const estadosActiveFiltersCount = computed(() => {
               </td>
               <td class="px-4 py-3.5 text-right">
                 <button
-                  v-if="item.key === 'POS'"
+                  v-if="item.key === 'KRYSTALOS'"
+                  type="button"
+                  class="inline-flex items-center justify-center min-w-[6.5rem] bg-indigo-600 hover:bg-indigo-500 text-white px-3 py-1.5 rounded-lg text-xs font-medium disabled:opacity-50 transition"
+                  :disabled="syncLoadingAny"
+                  @click="syncKrystalosMedicamentos"
+                >
+                  {{ krystalosSyncState.loading ? '…' : 'Sincronizar' }}
+                </button>
+                <button
+                  v-else-if="item.key === 'POS'"
                   type="button"
                   class="inline-flex items-center justify-center min-w-[6.5rem] bg-indigo-600 hover:bg-indigo-500 text-white px-3 py-1.5 rounded-lg text-xs font-medium disabled:opacity-50 transition"
                   :disabled="syncLoadingAny"
