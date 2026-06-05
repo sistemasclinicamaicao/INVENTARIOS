@@ -42,7 +42,7 @@ export class AuthService {
     }
 
     const otp = await this.otpService.generateAndStore(user.id);
-    await this.otpService.sendEmail(user.email, otp);
+    const emailSent = await this.otpService.sendEmail(user.email, otp);
 
     const sessionToken = uuidv4();
     await this.otpService.storeSession(sessionToken, user.id);
@@ -50,8 +50,10 @@ export class AuthService {
     return {
       requiresOtp: true,
       sessionToken,
-      message: 'OTP enviado al correo registrado',
-      devOtp: this.config.get('SMTP_HOST') ? undefined : otp,
+      message: emailSent
+        ? 'OTP enviado al correo registrado'
+        : 'OTP generado (revise consola del servidor o use el código mostrado)',
+      devOtp: emailSent ? undefined : otp,
     };
   }
 
