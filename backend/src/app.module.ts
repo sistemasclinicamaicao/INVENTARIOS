@@ -22,6 +22,7 @@ import { User } from './users/entities/user.entity';
 import { Role } from './users/entities/role.entity';
 import { UsersModule } from './users/users.module';
 import { WarehouseModule } from './warehouse/warehouse.module';
+import { redisIoOptions } from './common/redis-options.util';
 
 @Module({
   imports: [
@@ -49,7 +50,7 @@ import { WarehouseModule } from './warehouse/warehouse.module';
       imports: [ConfigModule],
       inject: [ConfigService],
       useFactory: (config: ConfigService) => ({
-        redis: config.get<string>('REDIS_URL') ?? 'redis://localhost:6379',
+        redis: redisIoOptions(config),
       }),
     }),
     HealthModule,

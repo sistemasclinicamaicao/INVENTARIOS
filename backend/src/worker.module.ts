@@ -6,6 +6,7 @@ import { IntegrationsModule } from './integrations/integrations.module';
 import { User } from './users/entities/user.entity';
 import { Role } from './users/entities/role.entity';
 import { HrSyncProcessor } from './workers/hr-sync.processor';
+import { redisIoOptions } from './common/redis-options.util';
 
 @Module({
   imports: [
@@ -24,7 +25,7 @@ import { HrSyncProcessor } from './workers/hr-sync.processor';
       imports: [ConfigModule],
       inject: [ConfigService],
       useFactory: (config: ConfigService) => ({
-        redis: config.get<string>('REDIS_URL') ?? 'redis://localhost:6379',
+        redis: redisIoOptions(config),
       }),
     }),
     BullModule.registerQueue({ name: 'hr-sync' }),

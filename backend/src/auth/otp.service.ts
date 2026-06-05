@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
 import * as nodemailer from 'nodemailer';
+import { redisIoOptions } from '../common/redis-options.util';
 
 @Injectable()
 export class OtpService {
@@ -9,15 +10,16 @@ export class OtpService {
   private mailer: nodemailer.Transporter | null = null;
 
   constructor(private readonly config: ConfigService) {
-    this.redis = new Redis(this.config.get<string>('REDIS_URL') ?? 'redis://localhost:6379');
+    this.redis = new Redis(redisIoOptions(config));
     const host = this.config.get<string>('SMTP_HOST');
     if (host) {
+      const smtpPass = String(this.config.get('SMTP_PASS') ?? '').replace(/\s+/g, '');
       this.mailer = nodemailer.createTransport({
         host,
         port: Number(this.config.get('SMTP_PORT') ?? 587),
         auth: {
           user: this.config.get('SMTP_USER'),
-          pass: this.config.get('SMTP_PASS'),
+          pass: smtpPass,
         },
       });
     }
