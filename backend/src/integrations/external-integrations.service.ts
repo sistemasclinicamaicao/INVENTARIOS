@@ -135,6 +135,31 @@ export class ExternalIntegrationsService {
     return dto.integrationKind ?? 'ERP_PURCHASE_ORDER';
   }
 
+  /** ERP + API Key sin plantilla → GET directo a URL base (como REST_QUERY). */
+  private isErpDirectQuery(row: {
+    integrationKind: string;
+    authMethod: string;
+    poPathTemplate?: string | null;
+  }): boolean {
+    return (
+      row.integrationKind === 'ERP_PURCHASE_ORDER' &&
+      row.authMethod === 'API_KEY' &&
+      !row.poPathTemplate?.trim()
+    );
+  }
+
+  private resolvePoPathTemplate(
+    kind: string,
+    authMethod: string,
+    template?: string | null,
+  ): string | null {
+    if (kind !== 'ERP_PURCHASE_ORDER') return null;
+    const trimmed = template?.trim();
+    if (trimmed) return trimmed;
+    if (authMethod === 'API_KEY') return null;
+    return '?consecutivo={number}';
+  }
+
   private validateCreateUpdate(
     kind: string,
     dto: CreateExternalIntegrationDto | UpdateExternalIntegrationDto,
@@ -276,10 +301,11 @@ export class ExternalIntegrationsService {
         ? encryptSecret(dto.authSecret.trim(), this.config)
         : null;
 
-    const poTemplate =
-      kind === 'ERP_PURCHASE_ORDER'
-        ? dto.poPathTemplate?.trim() || '?consecutivo={number}'
-        : null;
+    const poTemplate = this.resolvePoPathTemplate(
+      kind,
+      authMethod,
+      dto.poPathTemplate,
+    );
 
     const [row] = await this.dataSource.query<DbRow[]>(
       `INSERT INTO external_integrations (
@@ -371,7 +397,18 @@ export class ExternalIntegrationsService {
     }
     if (dto.poPathTemplate !== undefined) {
       sets.push(`po_path_template = $${i++}`);
-      params.push(dto.poPathTemplate.trim());
+      const auth = dto.authMethod ?? existing.authMethod;
+      params.push(
+        this.resolvePoPathTemplate(kind, auth, dto.poPathTemplate),
+      );
+    } else if (
+      dto.authMethod !== undefined &&
+      kind === 'ERP_PURCHASE_ORDER' &&
+      dto.authMethod === 'API_KEY' &&
+      !existing.poPathTemplate?.trim()
+    ) {
+      sets.push(`po_path_template = $${i++}`);
+      params.push(null);
     }
     if (dto.socrataDatasetId !== undefined) {
       sets.push(`socrata_dataset_id = $${i++}`);
@@ -458,7 +495,7 @@ export class ExternalIntegrationsService {
       };
     }
 
-    if (row.integrationKind === 'REST_QUERY') {
+    if (row.integrationKind === 'REST_QUERY' || this.isErpDirectQuery(row)) {
       const rec = this.toRecord(row);
       const res = await this.http.fetchJson(rec, '', {});
       const tableRows = extractJsonTableRows(res.data);
@@ -554,8 +591,10 @@ export class ExternalIntegrationsService {
 
   async previewRestQuery(id: string) {
     const row = await this.findRow(id);
-    if (row.integrationKind !== 'REST_QUERY') {
-      throw new BadRequestException('La integración no es de tipo REST');
+    if (row.integrationKind !== 'REST_QUERY' && !this.isErpDirectQuery(row)) {
+      throw new BadRequestException(
+        'La integración no admite consulta directa (use REST o ERP con API Key sin plantilla OC)',
+      );
     }
     if (!row.isActive) {
       throw new BadRequestException('La integración está inactiva');
@@ -907,10 +946,16 @@ export class ExternalIntegrationsService {
       throw new BadRequestException('La integración está inactiva');
     }
 
+    if (this.isErpDirectQuery(row)) {
+      throw new BadRequestException(
+        'Esta integración consulta la URL base completa. Use «Ejecutar consulta» en vista previa.',
+      );
+    }
+
     const rec = this.toRecord(row);
     const consecutivo = number.trim();
     const useMock = this.config.get('ERP_USE_MOCK') === 'true';
-    const poTemplate = row.poPathTemplate ?? '?consecutivo={number}';
+    const poTemplate = row.poPathTemplate?.trim() || '?consecutivo={number}';
 
     try {
       const res = await this.http.fetchJson(rec, poTemplate, {

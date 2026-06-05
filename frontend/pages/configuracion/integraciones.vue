@@ -178,12 +178,31 @@ const isSocrataPoll = computed(
   () => selectedPollIntegration.value?.integrationKind === 'SOCRATA_OPEN_DATA',
 )
 
-const isRestPoll = computed(
-  () => selectedPollIntegration.value?.integrationKind === 'REST_QUERY',
-)
+const isRestPoll = computed(() => {
+  const row = selectedPollIntegration.value
+  if (!row) return false
+  if (row.integrationKind === 'REST_QUERY') return true
+  return (
+    row.integrationKind === 'ERP_PURCHASE_ORDER' &&
+    row.authMethod === 'API_KEY' &&
+    !row.poPathTemplate?.trim()
+  )
+})
 
-const isErpPoll = computed(
-  () => selectedPollIntegration.value?.integrationKind === 'ERP_PURCHASE_ORDER',
+const isErpPoll = computed(() => {
+  const row = selectedPollIntegration.value
+  if (!row) return false
+  if (row.integrationKind !== 'ERP_PURCHASE_ORDER') return false
+  return !(
+    row.authMethod === 'API_KEY' &&
+    !row.poPathTemplate?.trim()
+  )
+})
+
+const showPoPathTemplate = computed(
+  () =>
+    form.value.integrationKind === 'ERP_PURCHASE_ORDER' &&
+    form.value.authMethod !== 'API_KEY',
 )
 
 const activeInvimaIntegrations = computed(() =>
@@ -226,6 +245,20 @@ function applyPosPresetToForm() {
   form.value.integrationKind = 'SOCRATA_OPEN_DATA'
   applyMedicamentosPosPreset(form.value)
   invimaPresetKey.value = 'CUSTOM'
+}
+
+function onAuthMethodChange() {
+  if (
+    form.value.integrationKind === 'ERP_PURCHASE_ORDER' &&
+    form.value.authMethod === 'API_KEY'
+  ) {
+    form.value.poPathTemplate = ''
+  } else if (
+    form.value.integrationKind === 'ERP_PURCHASE_ORDER' &&
+    !form.value.poPathTemplate?.trim()
+  ) {
+    form.value.poPathTemplate = '?consecutivo={number}'
+  }
 }
 
 function onKindChange() {
@@ -297,7 +330,10 @@ function startEdit(row: IntegrationRow) {
     authHeaderName: row.authHeaderName ?? 'x-api-key',
     authSecret: '',
     authUsername: row.authUsername ?? '',
-    poPathTemplate: row.poPathTemplate ?? '?consecutivo={number}',
+    poPathTemplate:
+      row.integrationKind === 'ERP_PURCHASE_ORDER' && row.authMethod === 'API_KEY'
+        ? (row.poPathTemplate ?? '')
+        : (row.poPathTemplate ?? '?consecutivo={number}'),
     socrataDatasetId: row.socrataDatasetId ?? '',
     socrataApiVersion: row.socrataApiVersion ?? 'SODA3',
     socrataQuery: row.socrataQuery ?? INVIMA_SOQL_TEMPLATE,
@@ -455,7 +491,10 @@ async function saveIntegration() {
   }
 
   if (form.value.integrationKind === 'ERP_PURCHASE_ORDER') {
-    body.poPathTemplate = form.value.poPathTemplate.trim()
+    body.poPathTemplate =
+      form.value.authMethod === 'API_KEY'
+        ? form.value.poPathTemplate.trim()
+        : form.value.poPathTemplate.trim() || '?consecutivo={number}'
   } else {
     body.socrataDatasetId = form.value.socrataDatasetId.trim()
     body.socrataApiVersion = form.value.socrataApiVersion
@@ -972,7 +1011,7 @@ async function testHis() {
           </h3>
           <div>
             <label class="text-sm text-slate-700">M?todo</label>
-            <select v-model="form.authMethod" class="w-full p-2 border rounded-lg text-sm mt-1">
+            <select v-model="form.authMethod" class="w-full p-2 border rounded-lg text-sm mt-1" @change="onAuthMethodChange">
               <option value="NONE">Sin autenticaci?n</option>
               <option value="API_KEY">API Key (header)</option>
               <option value="BEARER">Bearer token</option>
@@ -1026,13 +1065,20 @@ async function testHis() {
               <input v-model="form.authSecret" type="password" class="w-full p-2 border rounded-lg text-sm mt-1" />
             </div>
           </template>
-          <div v-if="form.integrationKind === 'ERP_PURCHASE_ORDER'">
+          <div v-if="showPoPathTemplate">
             <label class="text-sm text-slate-700">Ruta plantilla OC</label>
             <input v-model="form.poPathTemplate" class="w-full p-2 border rounded-lg text-sm mt-1 font-mono" />
             <p class="text-xs text-slate-400 mt-1">
               Crystalos: <code>?consecutivo={number}</code>
             </p>
           </div>
+          <p
+            v-else-if="form.integrationKind === 'ERP_PURCHASE_ORDER' && form.authMethod === 'API_KEY'"
+            class="text-xs text-slate-500 bg-slate-50 border border-slate-200 rounded-lg p-3"
+          >
+            Con <strong>API Key (header)</strong> se consulta la URL base completa sin plantilla OC.
+            En vista previa use <strong>Ejecutar consulta</strong>.
+          </p>
         </section>
 
         <div class="flex flex-wrap gap-3 pt-2">

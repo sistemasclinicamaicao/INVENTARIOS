@@ -98,7 +98,11 @@ export class CreateExternalIntegrationDto {
     default: '?consecutivo={number}',
     description: 'Ruta o query ERP. Placeholders: {number}, {consecutivo}',
   })
-  @ValidateIf((o) => (o.integrationKind ?? 'ERP_PURCHASE_ORDER') === 'ERP_PURCHASE_ORDER')
+  @ValidateIf(
+    (o) =>
+      (o.integrationKind ?? 'ERP_PURCHASE_ORDER') === 'ERP_PURCHASE_ORDER' &&
+      (o.authMethod ?? 'NONE') !== 'API_KEY',
+  )
   @IsOptional()
   @IsString()
   @MaxLength(300)
