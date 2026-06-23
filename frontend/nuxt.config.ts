@@ -16,7 +16,8 @@ export default defineNuxtConfig({
 
     port: Number(FRONTEND_PORT),
 
-    host: process.env.NUXT_HOST || '0.0.0.0',
+    // 127.0.0.1 evita 426 en Windows cuando el navegador usa localhost → ::1 (IPv6)
+    host: process.env.NUXT_HOST || '127.0.0.1',
 
     strictPort: true,
 
@@ -27,6 +28,13 @@ export default defineNuxtConfig({
   css: ['~/assets/css/main.css'],
 
   // Proxy solo vía server/routes/api/v1 — devProxy quitaba /api/v1 (→ Cannot GET /dashboard/stats)
+
+  vite: {
+    server: {
+      host: '127.0.0.1',
+      hmr: { host: '127.0.0.1', port: Number(FRONTEND_PORT) },
+    },
+  },
 
   runtimeConfig: {
 

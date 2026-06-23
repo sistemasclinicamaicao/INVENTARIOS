@@ -61,7 +61,8 @@ if (-not $env:DATABASE_URL) {
 if (-not $env:REDIS_URL) { $env:REDIS_URL = "redis://localhost:$($env:REDIS_PORT)" }
 if (-not $env:JWT_SECRET) { $env:JWT_SECRET = "dev_secret_change_me" }
 if (-not $env:NODE_ENV) { $env:NODE_ENV = "development" }
-if (-not $env:CORS_ORIGIN) { $env:CORS_ORIGIN = "http://localhost:$($env:FRONTEND_PORT)" }
+if (-not $env:CORS_ORIGIN) { $env:CORS_ORIGIN = "http://127.0.0.1:$($env:FRONTEND_PORT)" }
+if (-not $env:NUXT_HOST) { $env:NUXT_HOST = "127.0.0.1" }
 # Proxy Nuxt → API (mismo origen, sin CORS en el navegador)
 # Siempre proxy Nuxt (mismo origen); no usar URL absoluta al API en el navegador
 $env:NUXT_PUBLIC_API_BASE = "/api/v1"
@@ -167,7 +168,7 @@ Set-Location '$frontendDir'
 `$env:API_PORT='$($env:API_PORT)'
 `$env:FRONTEND_PORT='$($env:FRONTEND_PORT)'
 `$env:PORT='$($env:FRONTEND_PORT)'
-Write-Host ' Frontend Nuxt - http://localhost:$($env:FRONTEND_PORT)' -ForegroundColor Cyan
+Write-Host ' Frontend Nuxt - http://127.0.0.1:$($env:FRONTEND_PORT)' -ForegroundColor Cyan
 Write-Host ' (API Nest solo en puerto $($env:API_PORT))' -ForegroundColor DarkGray
 npm run dev
 "@
@@ -180,7 +181,7 @@ npm run dev
 
 Write-Host ""
 Write-Host "  ----------------------------------------" -ForegroundColor DarkGray
-Write-Host "  App (USE ESTA URL): http://localhost:$($env:FRONTEND_PORT)" -ForegroundColor Green
+Write-Host "  App (USE ESTA URL): http://127.0.0.1:$($env:FRONTEND_PORT)" -ForegroundColor Green
 Write-Host "  API (solo NestJS):  http://localhost:$($env:API_PORT)/api/v1" -ForegroundColor DarkGray
 Write-Host "  NO abra :$($env:API_PORT) en el navegador para la app." -ForegroundColor Yellow
 Write-Host "  Postgres: localhost:$($env:POSTGRES_PORT) | Redis: $($env:REDIS_PORT)" -ForegroundColor DarkGray

@@ -7,9 +7,13 @@ export default defineNuxtPlugin(() => {
   const frontPort = String(config.public.frontendPort ?? '3051')
 
   if (apiPort === frontPort) return
-  if (window.location.port !== apiPort) return
 
-  const url = new URL(window.location.href)
-  url.port = frontPort
-  window.location.replace(url.toString())
+  // Redirigir puerto API → frontend, o localhost → 127.0.0.1 (evita 426 IPv6 en Windows)
+  const { hostname, port } = window.location
+  if (port === apiPort || (hostname === 'localhost' && port === frontPort)) {
+    const url = new URL(window.location.href)
+    if (port === apiPort) url.port = frontPort
+    if (hostname === 'localhost') url.hostname = '127.0.0.1'
+    window.location.replace(url.toString())
+  }
 })

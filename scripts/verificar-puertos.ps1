@@ -46,5 +46,5 @@ try {
 }
 
 Write-Host ""
-Write-Host "  Abra la app en: http://localhost:$frontPort" -ForegroundColor Cyan
+Write-Host "  Abra la app en: http://127.0.0.1:$frontPort" -ForegroundColor Cyan
 Write-Host ""

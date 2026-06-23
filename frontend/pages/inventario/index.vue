@@ -2,7 +2,7 @@
 import type { InventoryBalanceRow, InventoryWarehouseRow } from '~/types/inventory'
 import { formatCop, formatDateLatAm, formatDateTimeLatAm, formatQty } from '~/utils/locale-format'
 
-definePageMeta({ layout: 'app', hideGlobalSearch: true, pageTitle: 'Inventario Central' })
+definePageMeta({ layout: 'app', pageTitle: 'Inventario Central' })
 
 type MainTab = 'saldos' | 'movimientos'
 

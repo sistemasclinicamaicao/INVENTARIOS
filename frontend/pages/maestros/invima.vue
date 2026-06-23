@@ -6,6 +6,13 @@ import {
   type InvimaExpiredCheckRow,
 } from '~/composables/useInvimaExpired'
 import { medicamentosPosColLabel } from '~/composables/useMedicamentosPosColumns'
+import { formatPmvPrice, invimaPmvColLabel } from '~/composables/useInvimaPmvColumns'
+import {
+  formatKrystalosCell,
+  KRYSTALOS_DEFAULT_COLUMNS,
+  krystalosColLabel,
+  krystalosReguladoBadgeClass,
+} from '~/composables/useKrystalosColumns'
 import {
   INVIMA_LIST_TYPE_ORDER,
   INVIMA_SOCRATA_PRESETS,
@@ -20,7 +27,13 @@ import {
 } from '~/composables/useInvimaColumns'
 import type { ExpiredInvimaItem } from '~/components/maestros/InvimaExpiredAlertModal.vue'
 
-definePageMeta({ layout: 'app', fullWidth: true })
+definePageMeta({
+  layout: 'app',
+  fullWidth: true,
+  compactContent: true,
+  pageTitle: 'Referencia INVIMA',
+  breadcrumb: { label: 'Maestros', to: '/maestros' },
+})
 
 const { fetchApi } = useApi()
 const session = useSessionStore()
@@ -84,6 +97,12 @@ interface PosBatchRow {
   importedAt: string
 }
 
+interface PmvBatchRow {
+  sourceFilename: string
+  rowsImported: number
+  importedAt: string
+}
+
 interface SyncCatalogItem {
   key: string
   listType?: InvimaPresetListType
@@ -104,6 +123,7 @@ const error = ref('')
 const result = ref<SearchResult | null>(null)
 const batches = ref<BatchRow[]>([])
 const posBatch = ref<PosBatchRow | null>(null)
+const pmvBatch = ref<PmvBatchRow | null>(null)
 const syncCatalog = ref<SyncCatalogItem[]>([])
 const syncCatalogLoading = ref(false)
 const syncMsg = ref('')
@@ -377,13 +397,14 @@ async function syncAllSequential() {
   const listSummary = INVIMA_LIST_TYPE_ORDER.map(
     (lt, i) => `${i + 1}. ${listLabels[lt] ?? lt}`,
   ).join('\n')
-  const totalSteps = INVIMA_LIST_TYPE_ORDER.length + 1
+  const totalSteps = INVIMA_LIST_TYPE_ORDER.length + 2
 
   if (
     !confirm(
       `¿Sincronizar los ${totalSteps} catálogos uno tras otro?\n\n` +
         `${listSummary}\n` +
-        `${totalSteps}. Medicamentos POS\n\n` +
+        `${INVIMA_LIST_TYPE_ORDER.length + 1}. Medicamentos POS\n` +
+        `${totalSteps}. Medicamentos Krystalos\n\n` +
         'El proceso puede tardar varios minutos. Se detendrá si un catálogo falla.',
     )
   ) {
@@ -432,8 +453,24 @@ async function syncAllSequential() {
   }
 
   completed++
+  syncAllProgress.value = `${completed + 1}/${total}`
+  syncMsg.value = `Sincronizando ${completed + 1} de ${total}: Medicamentos Krystalos…`
+
+  const krystalosOk = await runSyncKrystalos(false)
+  if (!krystalosOk) {
+    syncMsg.value =
+      completed > 0
+        ? `Detenido en «Medicamentos Krystalos». ${completed} catálogo${completed === 1 ? '' : 's'} completado${completed === 1 ? '' : 's'}.`
+        : 'Error al sincronizar «Medicamentos Krystalos».'
+    syncAllRunning.value = false
+    syncAllProgress.value = ''
+    return
+  }
+
+  completed++
   syncMsg.value = `Los ${completed} catálogos se sincronizaron correctamente.`
   await loadSyncCatalog()
+  await search()
   syncAllRunning.value = false
   syncAllProgress.value = ''
 }
@@ -466,6 +503,7 @@ const olderBatches = computed(() => {
 
 onMounted(async () => {
   await loadBatches()
+  await search()
 })
 
 watch(listType, () => {
@@ -486,7 +524,7 @@ function nextPage() {
   }
 }
 
-type MainTab = 'invima-cum' | 'krystalos' | 'pos' | 'estados' | 'sync'
+type MainTab = 'invima-cum' | 'krystalos' | 'pos' | 'pmv' | 'estados' | 'sync'
 const mainTab = ref<MainTab>('invima-cum')
 
 interface KrystalosSearchResult {
@@ -508,16 +546,6 @@ const krystalosPage = ref(1)
 const krystalosLoading = ref(false)
 const krystalosError = ref('')
 const krystalosResult = ref<KrystalosSearchResult | null>(null)
-
-const krystalosColumnLabels: Record<string, string> = {
-  IDARTICULO: 'Código artículo',
-  DESCRIPCION: 'Descripción',
-  codcum: 'CUM',
-}
-
-function krystalosColLabel(col: string) {
-  return krystalosColumnLabels[col] ?? col
-}
 
 async function loadKrystalos(resetPage = true, refresh = false) {
   if (resetPage) krystalosPage.value = 1
@@ -666,6 +694,132 @@ function posNextPage() {
   }
 }
 
+type PmvSearchResult = KrystalosSearchResult
+
+const pmvQ = ref('')
+const pmvCum = ref('')
+const pmvPage = ref(1)
+const pmvLoading = ref(false)
+const pmvError = ref('')
+const pmvResult = ref<PmvSearchResult | null>(null)
+const pmvImportLoading = ref(false)
+const pmvImportMsg = ref('')
+const pmvImportOk = ref<boolean | null>(null)
+const pmvFileInput = ref<HTMLInputElement | null>(null)
+
+const pmvPriceColumns = [
+  'precioMaxInstitucional',
+  'margenIps',
+  'precioMaxComercialPs',
+  'precioMaxComercialFinal',
+]
+
+function formatPmvCell(col: string, value: unknown): string {
+  if (value == null || value === '') return '—'
+  if (pmvPriceColumns.includes(col)) return formatPmvPrice(value)
+  if (col === 'fechaInicioVigencia') return formatInvimaDate(String(value)) ?? String(value)
+  return String(value)
+}
+
+async function loadPmvBatches() {
+  const { data } = await fetchApi<PmvBatchRow[]>('/masters/invima-pmv/batches')
+  pmvBatch.value = data?.[0] ?? null
+}
+
+async function loadPmv(resetPage = true) {
+  if (resetPage) pmvPage.value = 1
+  pmvLoading.value = true
+  pmvError.value = ''
+  const params = new URLSearchParams()
+  if (pmvQ.value.trim()) params.set('q', pmvQ.value.trim())
+  if (pmvCum.value.trim()) params.set('cum', pmvCum.value.trim())
+  params.set('page', String(pmvPage.value))
+  params.set('limit', '50')
+
+  const { data, error: err } = await fetchApi<PmvSearchResult>(
+    `/masters/invima-pmv/search?${params.toString()}`,
+  )
+  pmvLoading.value = false
+  if (err) {
+    pmvError.value = err
+    pmvResult.value = null
+    return
+  }
+  pmvResult.value = data
+}
+
+function pmvPrevPage() {
+  if (pmvPage.value > 1) {
+    pmvPage.value--
+    loadPmv(false)
+  }
+}
+
+function pmvNextPage() {
+  if (
+    pmvResult.value &&
+    pmvPage.value * pmvResult.value.limit < pmvResult.value.total
+  ) {
+    pmvPage.value++
+    loadPmv(false)
+  }
+}
+
+function triggerPmvFilePick() {
+  pmvFileInput.value?.click()
+}
+
+async function onPmvFileSelected(ev: Event) {
+  const input = ev.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file) return
+
+  const ext = file.name.toLowerCase()
+  if (!ext.endsWith('.xlsx') && !ext.endsWith('.xlsb') && !ext.endsWith('.xls')) {
+    pmvImportOk.value = false
+    pmvImportMsg.value = 'Use un archivo Excel (.xlsx o .xlsb)'
+    return
+  }
+
+  if (
+    !confirm(
+      `¿Importar «${file.name}»?\n\nSe reemplazarán todos los precios PMV locales. Puede tardar varios minutos.`,
+    )
+  ) {
+    return
+  }
+
+  pmvImportLoading.value = true
+  pmvImportMsg.value = 'Importando…'
+  pmvImportOk.value = null
+
+  const formData = new FormData()
+  formData.append('file', file)
+
+  const { data, error: err } = await fetchApi<{
+    ok: boolean
+    message?: string
+    rowsImported?: number
+  }>('/masters/invima-pmv/import', {
+    method: 'POST',
+    body: formData,
+  })
+
+  pmvImportLoading.value = false
+
+  if (err) {
+    pmvImportOk.value = false
+    pmvImportMsg.value = err
+    return
+  }
+
+  pmvImportOk.value = data?.ok ?? true
+  pmvImportMsg.value = data?.message ?? 'Importación completada'
+  await loadPmvBatches()
+  await loadPmv(true)
+}
+
 type EstadoFilterKey =
   | 'ALL'
   | 'MATCHED'
@@ -680,6 +834,8 @@ interface EstadoRow {
   idArticulo: string
   descripcion: string
   codcum: string | null
+  pmvPrecioUnitario: number | null
+  pmvRegulado: boolean
   invimaMatched: boolean
   invimaListType: string | null
   invimaEstadoRegistro: string | null
@@ -852,11 +1008,18 @@ function estadosNextPage() {
 }
 
 watch(mainTab, (tab) => {
+  if (tab === 'invima-cum' && !result.value && !loading.value) {
+    search()
+  }
   if (tab === 'krystalos' && !krystalosResult.value) {
     loadKrystalos()
   }
   if (tab === 'pos' && !posResult.value) {
     loadPos()
+  }
+  if (tab === 'pmv') {
+    if (!pmvResult.value) loadPmv()
+    if (!pmvBatch.value) loadPmvBatches()
   }
   if (tab === 'estados' && !estadosResult.value) {
     loadEstados()
@@ -881,41 +1044,44 @@ const estadosActiveFiltersCount = computed(() => {
 </script>
 
 <template>
-  <div class="space-y-4">
-    <div>
-      <NuxtLink to="/maestros" class="text-sm text-blue-600 hover:underline">← Maestros</NuxtLink>
-      <h2 class="text-2xl font-bold text-slate-800 mt-2">Referencia INVIMA (código único)</h2>
-    </div>
-
-    <div class="flex flex-wrap gap-2 border-b border-slate-200 pb-2">
+  <div class="flex flex-col h-[calc(100vh-3.5rem-1rem)] min-h-0">
+    <nav class="flex flex-wrap gap-0.5 p-0.5 bg-slate-100 rounded-lg shrink-0 mb-2">
       <button
         type="button"
-        class="px-4 py-2 text-sm rounded-lg transition"
-        :class="mainTab === 'invima-cum' ? 'bg-blue-600 text-white' : 'text-slate-600 hover:bg-slate-100'"
+        class="px-3 py-1.5 rounded-md text-xs font-medium transition"
+        :class="mainTab === 'invima-cum' ? 'bg-white text-blue-700 shadow-sm' : 'text-slate-600 hover:text-slate-800'"
         @click="mainTab = 'invima-cum'"
       >
         INVIMA CUM
       </button>
       <button
         type="button"
-        class="px-4 py-2 text-sm rounded-lg transition"
-        :class="mainTab === 'krystalos' ? 'bg-blue-600 text-white' : 'text-slate-600 hover:bg-slate-100'"
+        class="px-3 py-1.5 rounded-md text-xs font-medium transition"
+        :class="mainTab === 'krystalos' ? 'bg-white text-blue-700 shadow-sm' : 'text-slate-600 hover:text-slate-800'"
         @click="mainTab = 'krystalos'"
       >
         Medicamentos Krystalos
       </button>
       <button
         type="button"
-        class="px-4 py-2 text-sm rounded-lg transition"
-        :class="mainTab === 'pos' ? 'bg-blue-600 text-white' : 'text-slate-600 hover:bg-slate-100'"
+        class="px-3 py-1.5 rounded-md text-xs font-medium transition"
+        :class="mainTab === 'pos' ? 'bg-white text-blue-700 shadow-sm' : 'text-slate-600 hover:text-slate-800'"
         @click="mainTab = 'pos'"
       >
         Medicamentos POS
       </button>
       <button
         type="button"
-        class="px-4 py-2 text-sm rounded-lg transition"
-        :class="mainTab === 'estados' ? 'bg-blue-600 text-white' : 'text-slate-600 hover:bg-slate-100'"
+        class="px-3 py-1.5 rounded-md text-xs font-medium transition"
+        :class="mainTab === 'pmv' ? 'bg-white text-blue-700 shadow-sm' : 'text-slate-600 hover:text-slate-800'"
+        @click="mainTab = 'pmv'"
+      >
+        Precios PMV
+      </button>
+      <button
+        type="button"
+        class="px-3 py-1.5 rounded-md text-xs font-medium transition"
+        :class="mainTab === 'estados' ? 'bg-white text-blue-700 shadow-sm' : 'text-slate-600 hover:text-slate-800'"
         @click="mainTab = 'estados'"
       >
         Estados
@@ -923,17 +1089,18 @@ const estadosActiveFiltersCount = computed(() => {
       <button
         v-if="session.can('admin.users')"
         type="button"
-        class="px-4 py-2 text-sm rounded-lg transition"
-        :class="mainTab === 'sync' ? 'bg-indigo-600 text-white' : 'text-slate-600 hover:bg-slate-100'"
+        class="px-3 py-1.5 rounded-md text-xs font-medium transition"
+        :class="mainTab === 'sync' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-600 hover:text-slate-800'"
         @click="mainTab = 'sync'"
       >
         Sincronización
       </button>
-    </div>
+    </nav>
 
+    <div class="flex-1 min-h-0 flex flex-col">
     <template v-if="mainTab === 'invima-cum'">
     <div
-      class="rounded-2xl border border-slate-200 bg-white shadow-lg shadow-slate-200/50 overflow-hidden flex flex-col min-h-[32rem]"
+      class="rounded-2xl border border-slate-200 bg-white shadow-lg shadow-slate-200/50 overflow-hidden flex flex-col flex-1 min-h-0"
     >
       <div
         class="bg-gradient-to-r from-slate-800 via-slate-800 to-blue-900 px-4 py-3 flex flex-wrap items-center gap-2 gap-y-3"
@@ -1020,7 +1187,7 @@ const estadosActiveFiltersCount = computed(() => {
         </div>
       </div>
 
-      <div class="flex-1 overflow-x-auto overflow-y-auto max-h-[calc(100vh-14rem)]">
+      <div class="flex-1 min-h-0 overflow-x-auto overflow-y-auto">
         <table
           class="w-full text-sm border-collapse"
           :class="showFullDatasetColumns ? 'min-w-max' : ''"
@@ -1038,9 +1205,20 @@ const estadosActiveFiltersCount = computed(() => {
             </tr>
           </thead>
           <tbody class="divide-y divide-slate-100">
-            <tr v-if="!result?.items?.length">
+            <tr v-if="loading && !result?.items?.length">
               <td :colspan="tableColumns.length" class="px-4 py-12 text-center text-slate-400">
-                Sin datos. Sincronice desde integraciones INVIMA CUM en Configuración.
+                Cargando registros INVIMA…
+              </td>
+            </tr>
+            <tr v-else-if="!result?.items?.length">
+              <td :colspan="tableColumns.length" class="px-4 py-12 text-center text-slate-400">
+                {{
+                  error
+                    ? 'Error al consultar.'
+                    : result?.total === 0
+                      ? 'Sin datos. Sincronice desde la pestaña Sincronización.'
+                      : 'Sin resultados para los filtros aplicados.'
+                }}
               </td>
             </tr>
             <tr
@@ -1116,7 +1294,7 @@ const estadosActiveFiltersCount = computed(() => {
 
     <template v-else-if="mainTab === 'sync'">
     <div
-      class="rounded-2xl border border-slate-200 bg-white shadow-lg shadow-slate-200/50 overflow-hidden flex flex-col min-h-[32rem]"
+      class="rounded-2xl border border-slate-200 bg-white shadow-lg shadow-slate-200/50 overflow-hidden flex flex-col flex-1 min-h-0"
     >
       <div class="bg-gradient-to-r from-indigo-900 via-indigo-800 to-slate-800 px-4 py-3 flex flex-wrap items-center justify-between gap-2">
         <h3 class="text-white font-semibold text-sm">Sincronización (administrador)</h3>
@@ -1139,7 +1317,7 @@ const estadosActiveFiltersCount = computed(() => {
         </div>
       </div>
 
-      <div class="flex-1 overflow-x-auto">
+      <div class="flex-1 min-h-0 overflow-x-auto overflow-y-auto">
         <table class="w-full text-sm border-collapse min-w-[640px]">
           <thead class="bg-slate-800 text-left text-[11px] text-slate-200 uppercase tracking-wider sticky top-0 z-10">
             <tr>
@@ -1322,7 +1500,7 @@ const estadosActiveFiltersCount = computed(() => {
 
     <template v-else-if="mainTab === 'estados'">
       <div
-        class="rounded-2xl border border-slate-200 bg-white shadow-lg shadow-slate-200/50 overflow-hidden flex flex-col min-h-[32rem]"
+        class="rounded-2xl border border-slate-200 bg-white shadow-lg shadow-slate-200/50 overflow-hidden flex flex-col flex-1 min-h-0"
       >
         <div
           class="bg-gradient-to-r from-violet-900 via-violet-800 to-indigo-900 px-4 py-3 flex flex-wrap items-center gap-2 gap-y-3"
@@ -1561,7 +1739,7 @@ const estadosActiveFiltersCount = computed(() => {
           </div>
         </div>
 
-        <div class="flex-1 overflow-x-auto overflow-y-auto max-h-[calc(100vh-14rem)]">
+        <div class="flex-1 min-h-0 overflow-x-auto overflow-y-auto">
           <table class="w-full text-sm border-collapse min-w-[960px]">
             <thead class="bg-slate-800 text-left text-[11px] text-slate-200 uppercase tracking-wider sticky top-0 z-10">
               <tr>
@@ -1570,6 +1748,8 @@ const estadosActiveFiltersCount = computed(() => {
                 <th class="px-4 py-3.5 w-28 font-semibold">Cód. Krystalos</th>
                 <th class="px-4 py-3.5 min-w-[260px] font-semibold">Descripción Krystalos</th>
                 <th class="px-4 py-3.5 w-32 font-semibold">CUM</th>
+                <th class="px-4 py-3.5 w-36 font-semibold whitespace-nowrap">Precio unit. institucional</th>
+                <th class="px-4 py-3.5 w-36 font-semibold whitespace-nowrap">Medicamento regulado</th>
                 <th class="px-4 py-3.5 w-36 font-semibold">Estado</th>
                 <th class="px-4 py-3.5 w-40 font-semibold">Listado INVIMA</th>
                 <th class="px-4 py-3.5 w-28 font-semibold">Vence</th>
@@ -1578,12 +1758,12 @@ const estadosActiveFiltersCount = computed(() => {
             </thead>
             <tbody class="divide-y divide-slate-100">
               <tr v-if="estadosLoading && !estadosResult?.items?.length">
-                <td colspan="9" class="px-4 py-12 text-center text-slate-400">
+                <td colspan="11" class="px-4 py-12 text-center text-slate-400">
                   Cruzando CUM con INVIMA…
                 </td>
               </tr>
               <tr v-else-if="!estadosResult?.items?.length">
-                <td colspan="9" class="px-4 py-12 text-center text-slate-400">
+                <td colspan="11" class="px-4 py-12 text-center text-slate-400">
                   No hay resultados con los filtros actuales.
                 </td>
               </tr>
@@ -1633,6 +1813,18 @@ const estadosActiveFiltersCount = computed(() => {
                     {{ row.codcum || '—' }}
                   </span>
                 </td>
+                <td class="px-4 py-3.5 text-sm whitespace-nowrap tabular-nums text-slate-800">
+                  {{ formatPmvPrice(row.pmvPrecioUnitario) }}
+                </td>
+                <td class="px-4 py-3.5 whitespace-nowrap">
+                  <span
+                    v-if="row.pmvRegulado"
+                    :class="krystalosReguladoBadgeClass(true)"
+                  >
+                    Regulado
+                  </span>
+                  <span v-else class="text-slate-400">—</span>
+                </td>
                 <td class="px-4 py-3.5 whitespace-nowrap">
                   <span
                     class="inline-block font-medium px-2.5 py-1 rounded-full text-xs"
@@ -1665,7 +1857,7 @@ const estadosActiveFiltersCount = computed(() => {
 
     <template v-else-if="mainTab === 'krystalos'">
       <div
-        class="rounded-2xl border border-slate-200 bg-white shadow-lg shadow-slate-200/50 overflow-hidden flex flex-col min-h-[32rem]"
+        class="rounded-2xl border border-slate-200 bg-white shadow-lg shadow-slate-200/50 overflow-hidden flex flex-col flex-1 min-h-0"
       >
         <div
           class="bg-gradient-to-r from-amber-800 via-amber-700 to-orange-800 px-4 py-3 flex flex-wrap items-center gap-2 gap-y-3"
@@ -1730,12 +1922,12 @@ const estadosActiveFiltersCount = computed(() => {
           </div>
         </div>
 
-        <div class="flex-1 overflow-x-auto overflow-y-auto max-h-[calc(100vh-14rem)]">
+        <div class="flex-1 min-h-0 overflow-x-auto overflow-y-auto">
           <table class="w-full text-sm border-collapse">
             <thead class="bg-slate-800 text-left text-[11px] text-slate-200 uppercase tracking-wider sticky top-0 z-10">
               <tr>
                 <th
-                  v-for="col in krystalosResult?.columns ?? ['IDARTICULO', 'DESCRIPCION', 'codcum']"
+                  v-for="col in krystalosResult?.columns ?? KRYSTALOS_DEFAULT_COLUMNS"
                   :key="col"
                   class="px-4 py-3.5 whitespace-nowrap font-semibold"
                 >
@@ -1746,7 +1938,7 @@ const estadosActiveFiltersCount = computed(() => {
             <tbody class="divide-y divide-slate-100">
               <tr v-if="!krystalosResult?.items?.length && !krystalosLoading">
                 <td
-                  :colspan="(krystalosResult?.columns ?? ['IDARTICULO', 'DESCRIPCION', 'codcum']).length"
+                  :colspan="(krystalosResult?.columns ?? KRYSTALOS_DEFAULT_COLUMNS).length"
                   class="px-4 py-12 text-center text-slate-400"
                 >
                   {{ krystalosError ? 'Error al consultar.' : 'Pulse Buscar / Actualizar para cargar el catálogo.' }}
@@ -1754,7 +1946,7 @@ const estadosActiveFiltersCount = computed(() => {
               </tr>
               <tr v-if="krystalosLoading && !krystalosResult?.items?.length">
                 <td
-                  :colspan="3"
+                  :colspan="KRYSTALOS_DEFAULT_COLUMNS.length"
                   class="px-4 py-12 text-center text-slate-400"
                 >
                   Consultando API…
@@ -1769,9 +1961,23 @@ const estadosActiveFiltersCount = computed(() => {
                   v-for="col in krystalosResult?.columns ?? []"
                   :key="col"
                   class="px-4 py-3.5 align-top text-sm"
-                  :class="col === 'DESCRIPCION' ? 'min-w-[320px] whitespace-normal break-words text-slate-900' : 'whitespace-nowrap font-mono text-slate-800'"
+                  :class="
+                    col === 'DESCRIPCION'
+                      ? 'min-w-[320px] whitespace-normal break-words text-slate-900'
+                      : col === 'pmvPrecioUnitario'
+                        ? 'whitespace-nowrap tabular-nums text-slate-800'
+                        : 'whitespace-nowrap font-mono text-slate-800'
+                  "
                 >
-                  {{ row[col] ?? '—' }}
+                  <span
+                    v-if="col === 'pmvRegulado' && row[col] === true"
+                    :class="krystalosReguladoBadgeClass(row[col])"
+                  >
+                    Regulado
+                  </span>
+                  <template v-else>
+                    {{ formatKrystalosCell(col, row[col]) }}
+                  </template>
                 </td>
               </tr>
             </tbody>
@@ -1782,7 +1988,7 @@ const estadosActiveFiltersCount = computed(() => {
 
     <template v-else-if="mainTab === 'pos'">
       <div
-        class="rounded-2xl border border-slate-200 bg-white shadow-lg shadow-slate-200/50 overflow-hidden flex flex-col min-h-[32rem]"
+        class="rounded-2xl border border-slate-200 bg-white shadow-lg shadow-slate-200/50 overflow-hidden flex flex-col flex-1 min-h-0"
       >
         <div
           class="bg-gradient-to-r from-teal-900 via-teal-800 to-emerald-900 px-4 py-3 flex flex-wrap items-center gap-2 gap-y-3"
@@ -1847,7 +2053,7 @@ const estadosActiveFiltersCount = computed(() => {
           </div>
         </div>
 
-        <div class="flex-1 overflow-x-auto overflow-y-auto max-h-[calc(100vh-14rem)]">
+        <div class="flex-1 min-h-0 overflow-x-auto overflow-y-auto">
           <table class="w-full text-sm border-collapse min-w-max">
             <thead class="bg-slate-800 text-left text-[11px] text-slate-200 uppercase tracking-wider sticky top-0 z-10">
               <tr>
@@ -1900,5 +2106,177 @@ const estadosActiveFiltersCount = computed(() => {
         </div>
       </div>
     </template>
+
+    <template v-else-if="mainTab === 'pmv'">
+      <div
+        class="rounded-2xl border border-slate-200 bg-white shadow-lg shadow-slate-200/50 overflow-hidden flex flex-col flex-1 min-h-0"
+      >
+        <div
+          class="bg-gradient-to-r from-violet-900 via-violet-800 to-indigo-900 px-4 py-3 flex flex-wrap items-center gap-2 gap-y-3"
+        >
+          <h3 class="text-white font-semibold text-sm shrink-0">Precios máximos de venta (PMV)</h3>
+          <div class="flex-1 min-w-[10rem] max-w-xs relative">
+            <span class="absolute left-3 top-1/2 -translate-y-1/2 text-violet-200 text-xs pointer-events-none">CUM</span>
+            <input
+              v-model="pmvCum"
+              type="search"
+              placeholder="Filtrar por CUM…"
+              class="w-full pl-10 pr-3 py-2 rounded-lg bg-white/95 border-0 text-sm text-slate-800 placeholder:text-slate-400 shadow-sm focus:ring-2 focus:ring-violet-400 outline-none"
+              @keyup.enter="loadPmv()"
+            />
+          </div>
+          <div class="flex-1 min-w-[12rem] max-w-xl relative">
+            <span class="absolute left-3 top-1/2 -translate-y-1/2 text-violet-200 text-xs pointer-events-none">⌕</span>
+            <input
+              v-model="pmvQ"
+              type="search"
+              placeholder="Medicamento, mercado relevante, circular…"
+              class="w-full pl-8 pr-3 py-2 rounded-lg bg-white/95 border-0 text-sm text-slate-800 placeholder:text-slate-400 shadow-sm focus:ring-2 focus:ring-violet-400 outline-none"
+              @keyup.enter="loadPmv()"
+            />
+          </div>
+          <button
+            type="button"
+            class="shrink-0 bg-violet-500 hover:bg-violet-400 text-white px-4 py-2 rounded-lg text-sm font-medium shadow-sm disabled:opacity-50 transition"
+            :disabled="pmvLoading"
+            @click="loadPmv()"
+          >
+            {{ pmvLoading ? '…' : 'Buscar' }}
+          </button>
+          <template v-if="session.can('admin.users')">
+            <input
+              ref="pmvFileInput"
+              type="file"
+              accept=".xlsx,.xlsb,.xls"
+              class="hidden"
+              @change="onPmvFileSelected"
+            />
+            <button
+              type="button"
+              class="shrink-0 bg-white/15 hover:bg-white/25 text-white px-4 py-2 rounded-lg text-sm font-medium border border-white/20 disabled:opacity-50 transition"
+              :disabled="pmvImportLoading"
+              @click="triggerPmvFilePick"
+            >
+              {{ pmvImportLoading ? 'Importando…' : 'Subir Excel PMV' }}
+            </button>
+          </template>
+        </div>
+
+        <div
+          v-if="pmvError"
+          class="px-4 py-2 border-b border-slate-100 bg-slate-50/80 flex flex-wrap items-center gap-2 text-xs"
+        >
+          <p class="text-red-600">{{ pmvError }}</p>
+        </div>
+
+        <div class="px-4 py-2 border-b border-slate-100 flex flex-wrap justify-between items-center gap-2 bg-white text-xs">
+          <div class="flex flex-wrap items-center gap-x-3 gap-y-1 min-w-0">
+            <span class="text-sm font-medium text-slate-700 shrink-0">
+              <template v-if="pmvResult">
+                {{ pmvResult.total.toLocaleString() }} registro{{ pmvResult.total === 1 ? '' : 's' }} PMV
+              </template>
+              <template v-else-if="pmvLoading">Buscando…</template>
+              <template v-else>Sin búsqueda</template>
+            </span>
+            <span
+              v-if="pmvBatch"
+              class="text-slate-500 truncate max-w-[28rem]"
+              :title="`${pmvBatch.sourceFilename} · ${pmvBatch.rowsImported.toLocaleString()} filas · ${formatBatchDate(pmvBatch.importedAt)}`"
+            >
+              · {{ pmvBatch.rowsImported.toLocaleString() }} filas
+              · {{ formatBatchDate(pmvBatch.importedAt) }}
+            </span>
+            <span
+              v-if="pmvImportMsg"
+              class="truncate max-w-md"
+              :class="pmvImportOk === false ? 'text-red-600' : 'text-emerald-700'"
+            >
+              · {{ pmvImportMsg }}
+            </span>
+          </div>
+          <div class="flex gap-1.5 shrink-0">
+            <button
+              type="button"
+              class="text-sm px-3 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 disabled:opacity-40"
+              :disabled="pmvPage <= 1 || pmvLoading"
+              @click="pmvPrevPage"
+            >
+              Anterior
+            </button>
+            <button
+              type="button"
+              class="text-sm px-3 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 disabled:opacity-40"
+              :disabled="
+                !pmvResult ||
+                pmvPage * pmvResult.limit >= pmvResult.total ||
+                pmvLoading
+              "
+              @click="pmvNextPage"
+            >
+              Siguiente
+            </button>
+          </div>
+        </div>
+
+        <div class="flex-1 min-h-0 overflow-x-auto overflow-y-auto">
+          <table class="w-full text-sm border-collapse min-w-max">
+            <thead class="bg-slate-800 text-left text-[11px] text-slate-200 uppercase tracking-wider sticky top-0 z-10">
+              <tr>
+                <th
+                  v-for="col in pmvResult?.columns ?? ['cum', 'medicamento', 'precioMaxComercialFinal', 'fechaInicioVigencia']"
+                  :key="col"
+                  class="px-4 py-3.5 whitespace-nowrap font-semibold"
+                >
+                  {{ invimaPmvColLabel(col) }}
+                </th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-slate-100">
+              <tr v-if="!pmvResult?.items?.length && !pmvLoading">
+                <td
+                  :colspan="(pmvResult?.columns ?? ['cum']).length"
+                  class="px-4 py-12 text-center text-slate-400"
+                >
+                  {{
+                    pmvError
+                      ? 'Error al consultar.'
+                      : session.can('admin.users')
+                        ? 'Sin datos. Suba el archivo Excel PMV (.xlsb / .xlsx).'
+                        : 'Sin datos PMV cargados.'
+                  }}
+                </td>
+              </tr>
+              <tr v-if="pmvLoading && !pmvResult?.items?.length">
+                <td
+                  :colspan="4"
+                  class="px-4 py-12 text-center text-slate-400"
+                >
+                  Cargando precios PMV…
+                </td>
+              </tr>
+              <tr
+                v-for="(row, idx) in pmvResult?.items ?? []"
+                :key="idx"
+                class="hover:bg-violet-50/40 transition-colors"
+              >
+                <td
+                  v-for="col in pmvResult?.columns ?? []"
+                  :key="col"
+                  class="px-4 py-3.5 align-top text-sm text-slate-800"
+                  :class="
+                    ['medicamento', 'mercadoRelevante'].includes(col)
+                      ? 'min-w-[200px] whitespace-normal break-words'
+                      : 'whitespace-nowrap'
+                  "
+                >
+                  {{ formatPmvCell(col, row[col]) }}
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </template>
+    </div>
   </div>
 </template>

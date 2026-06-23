@@ -4,8 +4,11 @@ const config = useRuntimeConfig()
 const route = useRoute()
 const { loadProfile, logout } = useAuth()
 
-const hideGlobalSearch = computed(() => route.meta.hideGlobalSearch === true)
 const pageTitle = computed(() => String(route.meta.pageTitle ?? ''))
+const breadcrumb = computed(() => {
+  const bc = route.meta.breadcrumb as { label: string; to: string } | undefined
+  return bc?.label && bc?.to ? bc : null
+})
 
 onMounted(() => {
   const hasToken = !!localStorage.getItem('accessToken')
@@ -16,23 +19,22 @@ onMounted(() => {
 </script>
 
 <template>
-  <header class="bg-white h-14 border-b border-slate-200 flex items-center justify-between px-4 shrink-0">
-    <div
-      v-if="!hideGlobalSearch"
-      class="flex items-center bg-slate-100 px-3 py-1.5 rounded-lg w-full max-w-md border border-transparent focus-within:border-blue-500 focus-within:bg-white transition-all"
-    >
-      <UiIcon name="search" :size="18" class="text-slate-400 shrink-0" />
-      <input
-        type="text"
-        placeholder="Buscar producto, lote, OC, paciente..."
-        class="bg-transparent border-none outline-none pl-2 text-sm w-full text-slate-700"
-      />
+  <header class="bg-white h-14 border-b border-slate-200 flex items-center justify-between px-4 shrink-0 gap-4">
+    <div class="flex items-center gap-2 min-w-0 flex-1">
+      <NuxtLink
+        v-if="breadcrumb"
+        :to="breadcrumb.to"
+        class="text-xs text-blue-600 hover:underline shrink-0 whitespace-nowrap"
+      >
+        ← {{ breadcrumb.label }}
+      </NuxtLink>
+      <span v-if="breadcrumb && pageTitle" class="text-slate-300 shrink-0">·</span>
+      <p v-if="pageTitle" class="text-sm font-semibold text-slate-700 truncate">
+        {{ pageTitle }}
+      </p>
     </div>
-    <p v-else-if="pageTitle" class="text-sm font-semibold text-slate-700 truncate">
-      {{ pageTitle }}
-    </p>
 
-    <div class="flex items-center gap-4">
+    <div class="flex items-center gap-4 shrink-0">
       <button type="button" class="relative text-slate-500 hover:text-slate-700 transition">
         <UiIcon name="bell" :size="20" />
         <span

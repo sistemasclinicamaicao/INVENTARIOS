@@ -1,3 +1,4 @@
+import { normalizeCumKey } from './cum-key.util';
 import { normalizeAtc } from './medicamentos-pos.presets';
 
 export type InvimaListTypeKey = 'VIGENTE' | 'VENCIDO' | 'RENOVACION' | 'OTRO_ESTADO';
@@ -10,6 +11,7 @@ export interface InvimaCumMatchRow {
   producto: string | null;
   registroSanitario: string | null;
   atc: string | null;
+  cantidadCum: string | null;
 }
 
 export interface KrystalosMedicamentoRow {
@@ -34,9 +36,7 @@ const LIST_PRIORITY: InvimaListTypeKey[] = [
 ];
 
 export function normalizeCum(value: unknown): string {
-  return String(value ?? '')
-    .trim()
-    .toUpperCase();
+  return normalizeCumKey(value);
 }
 
 export function parseKrystalosMedicamento(

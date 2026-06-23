@@ -8,7 +8,7 @@ import type {
 } from '~/types/erp-cxc'
 import type { PurchaseOrderDetail, PurchaseOrderLine, PurchaseOrderSummary } from '~/types/purchases'
 
-definePageMeta({ layout: 'app', hideGlobalSearch: true, pageTitle: 'Órdenes de compra' })
+definePageMeta({ layout: 'app', pageTitle: 'Órdenes de compra' })
 
 const { fetchApi } = useApi()
 const router = useRouter()

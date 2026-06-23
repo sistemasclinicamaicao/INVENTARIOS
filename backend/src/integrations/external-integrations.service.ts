@@ -11,6 +11,7 @@ import { DataSource } from 'typeorm';
 import { InvimaListType } from '../masters/invima/invima-parser';
 import { INVIMA_LIST_TYPE_ORDER, INVIMA_LIST_TYPE_TITLES, INVIMA_SOCRATA_BASE_URL, INVIMA_SOCRATA_PRESETS, INVIMA_SOQL } from './invima-socrata.presets';
 import { InvimaService } from '../masters/invima/invima.service';
+import { InvimaPmvService, type PmvPriceRow } from '../masters/invima-pmv/invima-pmv.service';
 import { MedicamentosPosService } from '../masters/medicamentos-pos/medicamentos-pos.service';
 import { CreateExternalIntegrationDto } from './dto/create-external-integration.dto';
 import { UpdateExternalIntegrationDto } from './dto/update-external-integration.dto';
@@ -29,6 +30,11 @@ import {
   extractColumnNames,
   extractJsonTableRows,
 } from './rest-json-rows.util';
+import {
+  buildCumKey,
+  computePmvUnitPrice,
+  normalizeCumKey,
+} from './cum-key.util';
 import {
   type EstadoFilter,
   type InvimaCumMatchRow,
@@ -112,6 +118,7 @@ export class ExternalIntegrationsService {
     private readonly http: IntegrationHttpClient,
     private readonly socrata: SocrataQueryClient,
     private readonly invima: InvimaService,
+    private readonly invimaPmv: InvimaPmvService,
     private readonly medicamentosPos: MedicamentosPosService,
     @InjectDataSource()
     private readonly dataSource: DataSource,
@@ -1233,8 +1240,36 @@ export class ExternalIntegrationsService {
     const safePage = Math.max(page, 1);
     const total = rows.length;
     const offset = (safePage - 1) * safeLimit;
-    const items = rows.slice(offset, offset + safeLimit);
-    const columns = extractColumnNames(rows.length ? rows : fetched.rows);
+    const pageItems = rows.slice(offset, offset + safeLimit);
+
+    const cumKeys = [
+      ...new Set(
+        pageItems
+          .map((r) =>
+            normalizeCumKey(r.codcum ?? r.CODCUM ?? r.cum ?? ''),
+          )
+          .filter(Boolean),
+      ),
+    ];
+
+    const [pmvByCum, invimaByCum] = await Promise.all([
+      this.invimaPmv.loadPmvByCumKeys(cumKeys),
+      this.loadInvimaRowsByCum(cumKeys),
+    ]);
+
+    const enrichedItems = pageItems.map((row) => {
+      const codcum = normalizeCumKey(row.codcum ?? row.CODCUM ?? row.cum ?? '');
+      const invimaMatches = codcum ? invimaByCum.get(codcum) ?? [] : [];
+      const pmvFields = this.computePmvEnrichment(codcum, invimaMatches, pmvByCum);
+
+      return {
+        ...row,
+        ...pmvFields,
+      };
+    });
+
+    let columns = extractColumnNames(rows.length ? rows : fetched.rows);
+    columns = this.insertKrystalosPmvColumns(columns);
 
     return {
       ok: fetched.httpStatus >= 200 && fetched.httpStatus < 300,
@@ -1243,13 +1278,47 @@ export class ExternalIntegrationsService {
       url: fetched.url,
       integrationName: fetched.integrationName,
       columns,
-      items,
+      items: enrichedItems,
       total,
       page: safePage,
       limit: safeLimit,
       message:
         fetched.httpStatus >= 400 ? `Error HTTP ${fetched.httpStatus}` : undefined,
     };
+  }
+
+  private insertKrystalosPmvColumns(columns: string[]): string[] {
+    const extra = ['pmvPrecioUnitario', 'pmvRegulado'];
+    const filtered = columns.filter((c) => !extra.includes(c));
+    const codIdx = filtered.findIndex((c) => c.toLowerCase() === 'codcum');
+    if (codIdx >= 0) {
+      return [
+        ...filtered.slice(0, codIdx + 1),
+        ...extra,
+        ...filtered.slice(codIdx + 1),
+      ];
+    }
+    return [...filtered, ...extra];
+  }
+
+  private computePmvEnrichment(
+    codcum: string,
+    invimaMatches: InvimaCumMatchRow[],
+    pmvByCum: Map<string, PmvPriceRow>,
+  ): { pmvPrecioUnitario: number | null; pmvRegulado: boolean } {
+    const key = normalizeCumKey(codcum);
+    const pmv = key ? pmvByCum.get(key) : undefined;
+    const best = pickBestInvimaMatch(invimaMatches);
+    const pmvRegulado = Boolean(pmv);
+    const pmvPrecioUnitario =
+      pmv && best?.cantidadCum != null
+        ? computePmvUnitPrice(
+            pmv.precioMaxInstitucional,
+            pmv.margenIps,
+            best.cantidadCum,
+          )
+        : null;
+    return { pmvPrecioUnitario, pmvRegulado };
   }
 
   /** Descarga catálogo POS desde Socrata (solo para sincronización). */
@@ -1426,7 +1495,10 @@ export class ExternalIntegrationsService {
         ...new Set(medicamentos.map((m) => m.codcum).filter(Boolean)),
       ];
 
-      const invimaByCum = await this.loadInvimaRowsByCum(cumCodes);
+      const [invimaByCum, pmvByCum] = await Promise.all([
+        this.loadInvimaRowsByCum(cumCodes),
+        this.invimaPmv.loadPmvByCumKeys(cumCodes),
+      ]);
 
       let posAtcSet = new Set<string>();
       try {
@@ -1443,10 +1515,15 @@ export class ExternalIntegrationsService {
         const best = pickBestInvimaMatch(matches);
         const resumen = resolveEstadoResumen(med, matches);
         const pos = resolvePosLabel(best?.atc ?? null, posAtcSet);
+        const pmvFields = med.codcum
+          ? this.computePmvEnrichment(med.codcum, matches, pmvByCum)
+          : { pmvPrecioUnitario: null, pmvRegulado: false };
         return {
           idArticulo: med.idArticulo,
           descripcion: med.descripcion,
           codcum: med.codcum || null,
+          pmvPrecioUnitario: pmvFields.pmvPrecioUnitario,
+          pmvRegulado: pmvFields.pmvRegulado,
           invimaMatched: matches.length > 0,
           invimaListType: best?.listType ?? null,
           invimaEstadoRegistro: best?.estadoRegistro ?? null,
@@ -1568,8 +1645,16 @@ export class ExternalIntegrationsService {
     const chunkSize = 400;
     for (let i = 0; i < cumCodes.length; i += chunkSize) {
       const chunk = cumCodes.slice(i, i + chunkSize);
-      const invimaRows = await this.dataSource.query<InvimaCumMatchRow[]>(
+      const invimaRows = await this.dataSource.query<
+        (InvimaCumMatchRow & {
+          expedienteCum: string | null;
+          consecutivoCum: string | null;
+        })[]
+      >(
         `SELECT cum_codigo AS "cumCodigo",
+                expediente_cum AS "expedienteCum",
+                consecutivo_cum AS "consecutivoCum",
+                cantidad_cum AS "cantidadCum",
                 list_type AS "listType",
                 estado_registro AS "estadoRegistro",
                 to_char(fecha_vencimiento, 'YYYY-MM-DD') AS "fechaVencimiento",
@@ -1577,11 +1662,21 @@ export class ExternalIntegrationsService {
                 registro_sanitario AS "registroSanitario",
                 atc
          FROM invima_registros
-         WHERE UPPER(TRIM(cum_codigo)) = ANY($1::text[])`,
+         WHERE UPPER(TRIM(
+           CASE
+             WHEN expediente_cum IS NOT NULL AND TRIM(expediente_cum) <> ''
+              AND consecutivo_cum IS NOT NULL AND TRIM(consecutivo_cum) <> ''
+             THEN TRIM(expediente_cum) || '-' || TRIM(consecutivo_cum)
+             ELSE cum_codigo
+           END
+         )) = ANY($1::text[])`,
         [chunk],
       );
       for (const inv of invimaRows) {
-        const key = normalizeCum(inv.cumCodigo);
+        const key = normalizeCumKey(
+          buildCumKey(inv.expedienteCum, inv.consecutivoCum) ?? inv.cumCodigo,
+        );
+        if (!key) continue;
         const list = invimaByCum.get(key) ?? [];
         list.push(inv);
         invimaByCum.set(key, list);

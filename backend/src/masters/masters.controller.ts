@@ -1,4 +1,15 @@
-import { Body, Controller, Get, Param, Post, Query } from '@nestjs/common';
+import {
+  BadRequestException,
+  Body,
+  Controller,
+  Get,
+  Param,
+  Post,
+  Query,
+  UploadedFile,
+  UseInterceptors,
+} from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiTags } from '@nestjs/swagger';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { BulkErpProductsDto } from './dto/bulk-erp-products.dto';
@@ -10,6 +21,8 @@ import { SearchInvimaDto } from './invima/dto/search-invima.dto';
 import { InvimaService } from './invima/invima.service';
 import { SearchMedicamentosPosDto } from './medicamentos-pos/dto/search-medicamentos-pos.dto';
 import { MedicamentosPosService } from './medicamentos-pos/medicamentos-pos.service';
+import { InvimaPmvService } from './invima-pmv/invima-pmv.service';
+import { SearchInvimaPmvDto } from './invima-pmv/dto/search-invima-pmv.dto';
 import { ImportService } from './import.service';
 import { ProductsService } from './products.service';
 import { WarehousesService } from './warehouses.service';
@@ -24,6 +37,7 @@ export class MastersController {
     private readonly warehousesService: WarehousesService,
     private readonly invimaService: InvimaService,
     private readonly medicamentosPosService: MedicamentosPosService,
+    private readonly invimaPmvService: InvimaPmvService,
   ) {}
 
   @Get('summary')
@@ -106,6 +120,34 @@ export class MastersController {
   @Get('medicamentos-pos/search')
   searchMedicamentosPos(@Query() query: SearchMedicamentosPosDto) {
     return this.medicamentosPosService.search(query);
+  }
+
+  @Get('invima-pmv/batches')
+  listInvimaPmvBatches() {
+    return this.invimaPmvService.listBatches();
+  }
+
+  @Get('invima-pmv/search')
+  searchInvimaPmv(@Query() query: SearchInvimaPmvDto) {
+    return this.invimaPmvService.search(query);
+  }
+
+  @RequirePermissions('admin.users')
+  @Post('invima-pmv/import')
+  @UseInterceptors(
+    FileInterceptor('file', { limits: { fileSize: 30 * 1024 * 1024 } }),
+  )
+  importInvimaPmv(
+    @UploadedFile() file?: { buffer: Buffer; originalname: string },
+  ) {
+    if (!file?.buffer?.length) {
+      throw new BadRequestException('Debe adjuntar un archivo Excel (.xlsx o .xlsb)');
+    }
+    return this.invimaPmvService.importFromBuffer({
+      buffer: file.buffer,
+      filename: file.originalname || 'pmv.xlsx',
+      replaceExisting: true,
+    });
   }
 
   @RequirePermissions('admin.users')
