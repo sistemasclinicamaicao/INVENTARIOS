@@ -829,6 +829,7 @@ type EstadoFilterKey =
   | 'RENOVACION'
   | 'OTRO'
   | 'SIN_CUM'
+  | 'REGULADOS'
 
 interface EstadoRow {
   idArticulo: string
@@ -870,6 +871,7 @@ interface EstadosResult {
     renovacion: number
     otro: number
     sinRegistro: number
+    regulados?: number
     posMedicamento?: number
     noPos?: number
   }
@@ -912,6 +914,7 @@ const estadosSummaryChips = computed(() => {
     { key: 'VIGENTE' as EstadoFilterKey, label: 'Vigentes', count: s.vigente, class: 'bg-green-100 text-green-800' },
     { key: 'VENCIDO' as EstadoFilterKey, label: 'Vencidos', count: s.vencido, class: 'bg-red-100 text-red-800' },
     { key: 'RENOVACION' as EstadoFilterKey, label: 'Renovación', count: s.renovacion, class: 'bg-amber-100 text-amber-900' },
+    { key: 'REGULADOS' as EstadoFilterKey, label: 'Regulados', count: s.regulados ?? 0, class: 'bg-emerald-100 text-emerald-800' },
     { key: 'NOT_MATCHED' as EstadoFilterKey, label: 'Sin registro INVIMA', count: s.sinRegistro, class: 'bg-slate-200 text-slate-700' },
     ...(s.sinCum
       ? [{ key: 'SIN_CUM' as EstadoFilterKey, label: 'Sin CUM', count: s.sinCum, class: 'bg-slate-100 text-slate-600' }]
@@ -1635,6 +1638,7 @@ const estadosActiveFiltersCount = computed(() => {
                   <option value="VIGENTE">Solo vigentes</option>
                   <option value="VENCIDO">Solo vencidos</option>
                   <option value="RENOVACION">En renovación</option>
+                  <option value="REGULADOS">Regulados (PMV)</option>
                   <option value="OTRO">Otros estados</option>
                   <option value="NOT_MATCHED">Sin registro INVIMA</option>
                   <option value="MATCHED">Con match INVIMA</option>

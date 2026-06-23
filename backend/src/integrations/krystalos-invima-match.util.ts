@@ -98,7 +98,8 @@ export type EstadoFilter =
   | 'VENCIDO'
   | 'RENOVACION'
   | 'OTRO'
-  | 'SIN_CUM';
+  | 'SIN_CUM'
+  | 'REGULADOS';
 
 export function matchesEstadoFilter(
   key: EstadoResumenKey,

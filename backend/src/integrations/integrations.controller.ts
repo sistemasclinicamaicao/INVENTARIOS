@@ -97,6 +97,7 @@ export class IntegrationsController {
       'RENOVACION',
       'SIN_CUM',
       'OTRO',
+      'REGULADOS',
     ] as const;
     const estadoFilter = allowed.includes(estado as (typeof allowed)[number])
       ? (estado as (typeof allowed)[number])

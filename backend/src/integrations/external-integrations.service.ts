@@ -1549,6 +1549,7 @@ export class ExternalIntegrationsService {
         renovacion: allRows.filter((r) => r.estadoKey === 'RENOVACION').length,
         otro: allRows.filter((r) => r.estadoKey === 'OTRO').length,
         sinRegistro: allRows.filter((r) => r.estadoKey === 'SIN_REGISTRO').length,
+        regulados: allRows.filter((r) => r.pmvRegulado).length,
         posMedicamento: allRows.filter((r) => r.posMatched).length,
         noPos: allRows.filter((r) => !r.posMatched).length,
       };
@@ -1597,7 +1598,9 @@ export class ExternalIntegrationsService {
       );
     }
 
-    if (estadoFilter !== 'ALL') {
+    if (estadoFilter === 'REGULADOS') {
+      merged = merged.filter((row) => row.pmvRegulado);
+    } else if (estadoFilter !== 'ALL') {
       merged = merged.filter((row) => matchesEstadoFilter(row.estadoKey, estadoFilter));
     }
 
