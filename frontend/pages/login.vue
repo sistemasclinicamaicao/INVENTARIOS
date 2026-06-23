@@ -96,8 +96,9 @@ async function submitOtp() {
 
       <form v-else class="space-y-4" @submit.prevent="submitOtp">
         <p class="text-sm text-slate-600">Ingrese el código enviado a su correo.</p>
-        <p v-if="devOtp" class="text-xs text-amber-600 bg-amber-50 p-2 rounded">
-          [DEV] OTP: {{ devOtp }} — o use 000000
+        <p v-if="devOtp" class="text-xs text-amber-700 bg-amber-50 border border-amber-200 p-3 rounded">
+          No se pudo enviar el correo. Use este código OTP:
+          <strong class="block text-center text-lg tracking-widest mt-1">{{ devOtp }}</strong>
         </p>
         <input
           v-model="otp"

@@ -90,17 +90,52 @@ export class SocrataQueryClient {
       Accept: 'application/json',
     };
 
-    if (cfg.apiVersion === 'SODA3') {
-      const url = `${base}/api/v3/views/${cfg.datasetId}/query.json`;
-      const body = JSON.stringify({
-        query: cfg.query,
-        page: { pageNumber, pageSize: cfg.pageSize },
-        includeSynthetic: false,
-      });
+    try {
+      if (cfg.apiVersion === 'SODA3') {
+        const url = `${base}/api/v3/views/${cfg.datasetId}/query.json`;
+        const body = JSON.stringify({
+          query: cfg.query,
+          page: { pageNumber, pageSize: cfg.pageSize },
+          includeSynthetic: false,
+        });
+        const res = await fetch(url, {
+          method: 'POST',
+          headers,
+          body,
+          signal: AbortSignal.timeout(120_000),
+        });
+        const text = await res.text();
+        const durationMs = Date.now() - start;
+        let data: unknown = null;
+        try {
+          data = text ? JSON.parse(text) : null;
+        } catch {
+          return {
+            ok: false,
+            status: res.status,
+            durationMs,
+            url,
+            rows: [],
+            message: 'Respuesta no es JSON válido',
+          };
+        }
+        const rows = this.normalizeRows(data);
+        return {
+          ok: res.ok,
+          status: res.status,
+          durationMs,
+          url,
+          rows,
+          message: res.ok ? undefined : this.errorMessage(res.status, data, text),
+        };
+      }
+
+      const offset = (pageNumber - 1) * cfg.pageSize;
+      const encodedQuery = encodeURIComponent(cfg.query);
+      const url = `${base}/resource/${cfg.datasetId}.json?$query=${encodedQuery}&$limit=${cfg.pageSize}&$offset=${offset}`;
       const res = await fetch(url, {
-        method: 'POST',
-        headers,
-        body,
+        method: 'GET',
+        headers: this.http.buildHeaders(cfg.record),
         signal: AbortSignal.timeout(120_000),
       });
       const text = await res.text();
@@ -118,48 +153,27 @@ export class SocrataQueryClient {
           message: 'Respuesta no es JSON válido',
         };
       }
-      const rows = this.normalizeRows(data);
       return {
         ok: res.ok,
         status: res.status,
         durationMs,
         url,
-        rows,
+        rows: this.normalizeRows(data),
         message: res.ok ? undefined : this.errorMessage(res.status, data, text),
       };
-    }
-
-    const offset = (pageNumber - 1) * cfg.pageSize;
-    const encodedQuery = encodeURIComponent(cfg.query);
-    const url = `${base}/resource/${cfg.datasetId}.json?$query=${encodedQuery}&$limit=${cfg.pageSize}&$offset=${offset}`;
-    const res = await fetch(url, {
-      method: 'GET',
-      headers: this.http.buildHeaders(cfg.record),
-      signal: AbortSignal.timeout(120_000),
-    });
-    const text = await res.text();
-    const durationMs = Date.now() - start;
-    let data: unknown = null;
-    try {
-      data = text ? JSON.parse(text) : null;
-    } catch {
+    } catch (e) {
+      const err = e as Error & { cause?: { code?: string; message?: string } };
+      const cause = err.cause?.code ?? err.cause?.message;
+      const detail = cause ? `${err.message} (${cause})` : err.message;
       return {
         ok: false,
-        status: res.status,
-        durationMs,
-        url,
+        status: 0,
+        durationMs: Date.now() - start,
+        url: `${base}/…/${cfg.datasetId}`,
         rows: [],
-        message: 'Respuesta no es JSON válido',
+        message: `No se pudo conectar con Socrata (${cfg.baseUrl}): ${detail}. Verifique salida a internet del contenedor API.`,
       };
     }
-    return {
-      ok: res.ok,
-      status: res.status,
-      durationMs,
-      url,
-      rows: this.normalizeRows(data),
-      message: res.ok ? undefined : this.errorMessage(res.status, data, text),
-    };
   }
 
   private errorMessage(status: number, data: unknown, text: string): string {
