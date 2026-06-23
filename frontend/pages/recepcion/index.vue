@@ -2,6 +2,12 @@
 import type { AlertVariant } from '~/components/ui/UiAlertModal.vue'
 import type { ReceptionOrder } from '~/types/reception'
 import type { PurchaseOrderSummary } from '~/types/purchases'
+import type {
+  ReceptionHistoryDetail,
+  ReceptionHistoryFilters,
+  ReceptionHistoryListResult,
+  ReceptionHistoryRow,
+} from '~/types/reception-history'
 
 definePageMeta({ layout: 'app' })
 
@@ -25,6 +31,28 @@ function showAlert(message: string, options?: { title?: string; variant?: AlertV
 }
 
 const openOrders = ref<PurchaseOrderSummary[]>([])
+
+interface WarehouseOption {
+  id: string
+  code: string
+  name: string
+}
+
+const historyWarehouses = ref<WarehouseOption[]>([])
+const historyRows = ref<ReceptionHistoryRow[]>([])
+const historyLoading = ref(false)
+const historyPage = ref(1)
+const historyTotal = ref(0)
+const historyTotalPages = ref(1)
+const historyFilters = ref<ReceptionHistoryFilters>({
+  oc: '',
+  warehouseId: '',
+  from: '',
+  to: '',
+})
+
+const receiptOpen = ref(false)
+const receiptDetail = ref<ReceptionHistoryDetail | null>(null)
 
 const ocNumber = ref('')
 const supplierId = ref('')
@@ -85,8 +113,53 @@ function applyOrder(data: ReceptionOrder) {
 }
 
 async function loadMasters() {
-  const ordRes = await fetchApi<PurchaseOrderSummary[]>('/purchases/orders')
+  const [ordRes, whRes] = await Promise.all([
+    fetchApi<PurchaseOrderSummary[]>('/purchases/orders'),
+    fetchApi<WarehouseOption[]>('/receptions/warehouses'),
+  ])
   if (ordRes.data) openOrders.value = ordRes.data
+  if (whRes.data) historyWarehouses.value = whRes.data
+}
+
+async function loadHistory(page = historyPage.value) {
+  historyLoading.value = true
+  historyPage.value = page
+  const params = new URLSearchParams()
+  params.set('page', String(page))
+  params.set('limit', '25')
+  if (historyFilters.value.oc) params.set('oc', historyFilters.value.oc)
+  if (historyFilters.value.warehouseId) params.set('warehouseId', historyFilters.value.warehouseId)
+  if (historyFilters.value.from) params.set('from', historyFilters.value.from)
+  if (historyFilters.value.to) params.set('to', historyFilters.value.to)
+
+  const { data, error: err } = await fetchApi<ReceptionHistoryListResult>(
+    `/receptions/history?${params}`,
+  )
+  historyLoading.value = false
+  if (err || !data) {
+    historyRows.value = []
+    historyTotal.value = 0
+    historyTotalPages.value = 1
+    return
+  }
+  historyRows.value = data.items
+  historyTotal.value = data.total
+  historyTotalPages.value = data.totalPages
+  historyPage.value = data.page
+}
+
+function onHistorySearch(filters: ReceptionHistoryFilters) {
+  historyFilters.value = filters
+  loadHistory(1)
+}
+
+function onHistoryPageChange(page: number) {
+  loadHistory(page)
+}
+
+function openReceipt(detail: ReceptionHistoryDetail) {
+  receiptDetail.value = detail
+  receiptOpen.value = true
 }
 
 async function loadOrder(oc?: string) {
@@ -235,6 +308,7 @@ async function confirmReception(isPartial = false) {
     scanMessage.value = `Recepción parcial ${data.receptionNumber} — faltantes siguen pendientes en la OC`
   }
   await loadMasters()
+  await loadHistory()
 }
 
 const route = useRoute()
@@ -256,6 +330,7 @@ watch(
 onMounted(async () => {
   await loadMasters()
   await loadFromRouteQuery()
+  await loadHistory()
 })
 </script>
 
@@ -268,6 +343,7 @@ onMounted(async () => {
           OC cargada desde
           <NuxtLink to="/compras/ordenes" class="text-blue-600 hover:underline">Órdenes de compra</NuxtLink>
           ; complete lote/vencimiento (farmacia) y confirme la recepción.
+          <a href="#historial" class="text-blue-600 hover:underline ml-1">Ver historial ↓</a>
         </p>
         <p v-if="scanMessage" class="text-xs text-blue-600 mt-1">{{ scanMessage }}</p>
       </div>
@@ -384,6 +460,32 @@ onMounted(async () => {
       :title="alertTitle"
       :message="alertMessage"
       :variant="alertVariant"
+    />
+
+    <section id="historial" class="mt-10 border-t border-slate-200 pt-8">
+      <h2 class="text-lg font-bold text-slate-800 mb-1">Historial de recepciones</h2>
+      <p class="text-sm text-slate-500 mb-4">
+        Consulte recepciones confirmadas con artículos, cantidades, OC y personal responsable.
+      </p>
+      <RecepcionReceptionHistoryFilters
+        :warehouses="historyWarehouses"
+        :loading="historyLoading"
+        @search="onHistorySearch"
+      />
+      <RecepcionReceptionHistoryTable
+        :rows="historyRows"
+        :loading="historyLoading"
+        :page="historyPage"
+        :total="historyTotal"
+        :total-pages="historyTotalPages"
+        @page-change="onHistoryPageChange"
+        @print="openReceipt"
+      />
+    </section>
+
+    <RecepcionReceptionThermalReceipt
+      v-model:open="receiptOpen"
+      :detail="receiptDetail"
     />
   </div>
 </template>

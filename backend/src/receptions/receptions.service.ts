@@ -12,6 +12,7 @@ import { PurchaseOrdersService } from '../purchases/purchase-orders.service';
 import { SuppliersService } from '../purchases/suppliers.service';
 import { ConfirmReceptionDto } from './dto/confirm-reception.dto';
 import { ImportErpReceptionDto } from './dto/import-erp-reception.dto';
+import { ListReceptionHistoryDto } from './dto/list-reception-history.dto';
 
 @Injectable()
 export class ReceptionsService {
@@ -393,7 +394,144 @@ export class ReceptionsService {
     throw new NotFoundException(`No se encontró producto u OC para el código ${barcode}`);
   }
 
-  async confirmReception(dto: ConfirmReceptionDto) {
+  async listHistory(query: ListReceptionHistoryDto) {
+    const page = Math.max(1, query.page ?? 1);
+    const limit = Math.min(100, Math.max(1, query.limit ?? 25));
+    const offset = (page - 1) * limit;
+
+    const conditions: string[] = ['1=1'];
+    const args: unknown[] = [];
+    let n = 1;
+
+    if (query.oc?.trim()) {
+      conditions.push(`po.number ILIKE $${n++}`);
+      args.push(`%${query.oc.trim()}%`);
+    }
+    if (query.warehouseId) {
+      conditions.push(`po.warehouse_id = $${n++}`);
+      args.push(query.warehouseId);
+    }
+    if (query.receivedBy) {
+      conditions.push(`r.received_by = $${n++}`);
+      args.push(query.receivedBy);
+    }
+    if (query.from?.trim()) {
+      conditions.push(`r.received_at >= $${n++}::date`);
+      args.push(query.from.trim());
+    }
+    if (query.to?.trim()) {
+      conditions.push(`r.received_at < ($${n++}::date + INTERVAL '1 day')`);
+      args.push(query.to.trim());
+    }
+
+    const where = conditions.join(' AND ');
+
+    const [countRow] = await this.dataSource.query(
+      `SELECT COUNT(DISTINCT r.id)::int AS total
+       FROM receptions r
+       JOIN purchase_orders po ON po.id = r.purchase_order_id
+       WHERE ${where}`,
+      args,
+    );
+
+    const items = await this.dataSource.query(
+      `SELECT
+         r.id,
+         r.number,
+         r.received_at AS "receivedAt",
+         r.is_partial AS "isPartial",
+         po.id AS "purchaseOrderId",
+         po.number AS "ocNumber",
+         po.supplier_name AS "supplierName",
+         w.id AS "warehouseId",
+         w.code AS "warehouseCode",
+         w.name AS "warehouseName",
+         u.full_name AS "receivedByName",
+         u.cedula AS "receivedByCedula",
+         COUNT(rl.id)::int AS "lineCount",
+         COALESCE(SUM(rl.qty_received), 0)::numeric AS "totalQtyReceived"
+       FROM receptions r
+       JOIN purchase_orders po ON po.id = r.purchase_order_id
+       JOIN warehouses w ON w.id = po.warehouse_id
+       LEFT JOIN users u ON u.id = r.received_by
+       LEFT JOIN reception_lines rl ON rl.reception_id = r.id
+       WHERE ${where}
+       GROUP BY r.id, po.id, po.number, po.supplier_name, w.id, w.code, w.name, u.full_name, u.cedula
+       ORDER BY r.received_at DESC
+       LIMIT $${n++} OFFSET $${n++}`,
+      [...args, limit, offset],
+    );
+
+    return {
+      items: items.map((row: Record<string, unknown>) => ({
+        ...row,
+        receivedByName: row.receivedByName ?? 'No registrado',
+        totalQtyReceived: Number(row.totalQtyReceived ?? 0),
+        lineCount: Number(row.lineCount ?? 0),
+      })),
+      total: countRow?.total ?? 0,
+      page,
+      limit,
+      totalPages: Math.max(1, Math.ceil((countRow?.total ?? 0) / limit)),
+    };
+  }
+
+  async getHistoryDetail(receptionId: string) {
+    const [header] = await this.dataSource.query(
+      `SELECT
+         r.id,
+         r.number,
+         r.received_at AS "receivedAt",
+         r.is_partial AS "isPartial",
+         po.id AS "purchaseOrderId",
+         po.number AS "ocNumber",
+         po.supplier_name AS "supplierName",
+         w.id AS "warehouseId",
+         w.code AS "warehouseCode",
+         w.name AS "warehouseName",
+         u.full_name AS "receivedByName",
+         u.cedula AS "receivedByCedula"
+       FROM receptions r
+       JOIN purchase_orders po ON po.id = r.purchase_order_id
+       JOIN warehouses w ON w.id = po.warehouse_id
+       LEFT JOIN users u ON u.id = r.received_by
+       WHERE r.id = $1`,
+      [receptionId],
+    );
+    if (!header) {
+      throw new NotFoundException('Recepción no encontrada');
+    }
+
+    const lines = await this.dataSource.query(
+      `SELECT
+         rl.id,
+         p.code AS "productCode",
+         p.name AS "productName",
+         rl.qty_received AS "qtyReceived",
+         COALESCE(pol.unit, 'UND') AS unit,
+         rl.lot_number AS "lotNumber",
+         rl.expires_at AS "expiresAt",
+         COALESCE(pol.qty_erp, pol.qty_ordered) AS "ocLineQty"
+       FROM reception_lines rl
+       JOIN products p ON p.id = rl.product_id
+       LEFT JOIN purchase_order_lines pol ON pol.id = rl.purchase_order_line_id
+       WHERE rl.reception_id = $1
+       ORDER BY p.code`,
+      [receptionId],
+    );
+
+    return {
+      ...header,
+      receivedByName: header.receivedByName ?? 'No registrado',
+      lines: lines.map((l: Record<string, unknown>) => ({
+        ...l,
+        qtyReceived: Number(l.qtyReceived),
+        ocLineQty: l.ocLineQty != null ? Number(l.ocLineQty) : null,
+      })),
+    };
+  }
+
+  async confirmReception(dto: ConfirmReceptionDto, receivedByUserId?: string) {
     const receiveLines = dto.lines.filter(
       (l) => l.disposition === 'receive' && l.qtyReceived > 0,
     );
@@ -433,9 +571,14 @@ export class ReceptionsService {
 
       const recNumber = `REC-${Date.now()}`;
       const [reception] = await qr.query(
-        `INSERT INTO receptions (purchase_order_id, number, is_partial)
-         VALUES ($1, $2, $3) RETURNING id`,
-        [dto.purchaseOrderId, recNumber, dto.isPartial ?? true],
+        `INSERT INTO receptions (purchase_order_id, number, is_partial, received_by)
+         VALUES ($1, $2, $3, $4) RETURNING id`,
+        [
+          dto.purchaseOrderId,
+          recNumber,
+          dto.isPartial ?? true,
+          receivedByUserId ?? null,
+        ],
       );
       const receptionId = reception.id;
 
