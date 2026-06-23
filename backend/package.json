@@ -9,6 +9,7 @@
     "start:prod": "node dist/main",
     "start:worker": "node dist/worker",
     "import:invima": "node dist/scripts/import-invima-cli.js",
+    "import:invima-pmv": "node dist/scripts/import-invima-pmv-cli.js",
     "reload:invima-socrata": "node dist/scripts/reload-invima-socrata-cli.js",
     "lint": "eslint \"{src,apps,libs,test}/**/*.ts\" --fix"
   },

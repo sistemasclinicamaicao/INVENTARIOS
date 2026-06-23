@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { InjectDataSource } from '@nestjs/typeorm';
 import { createHash } from 'crypto';
 import { DataSource } from 'typeorm';
@@ -31,20 +31,49 @@ const BATCH_INSERT = 400;
 
 @Injectable()
 export class InvimaPmvService {
+  private readonly logger = new Logger(InvimaPmvService.name);
+  private pmvSchemaMissing = false;
+
   constructor(
     @InjectDataSource()
     private readonly dataSource: DataSource,
   ) {}
 
+  private isMissingPmvSchemaError(error: unknown): boolean {
+    const msg = String((error as Error)?.message ?? error);
+    return /invima_pmv_/i.test(msg) && /does not exist|no existe|undefined_table/i.test(msg);
+  }
+
+  private markPmvSchemaMissing(error: unknown): void {
+    if (!this.pmvSchemaMissing) {
+      this.pmvSchemaMissing = true;
+      this.logger.warn(
+        'Tablas PMV no disponibles (aplique backend/migrations/029_invima_pmv_registros.sql)',
+      );
+    }
+    if (error && !this.isMissingPmvSchemaError(error)) {
+      throw error;
+    }
+  }
+
   async listBatches() {
-    return this.dataSource.query(
-      `SELECT id, source_filename AS "sourceFilename",
-              rows_imported AS "rowsImported",
-              imported_at AS "importedAt"
-       FROM invima_pmv_import_batches
-       ORDER BY imported_at DESC
-       LIMIT 20`,
-    );
+    if (this.pmvSchemaMissing) return [];
+    try {
+      return await this.dataSource.query(
+        `SELECT id, source_filename AS "sourceFilename",
+                rows_imported AS "rowsImported",
+                imported_at AS "importedAt"
+         FROM invima_pmv_import_batches
+         ORDER BY imported_at DESC
+         LIMIT 20`,
+      );
+    } catch (error) {
+      if (this.isMissingPmvSchemaError(error)) {
+        this.markPmvSchemaMissing(error);
+        return [];
+      }
+      throw error;
+    }
   }
 
   async latestBatch() {
@@ -55,30 +84,40 @@ export class InvimaPmvService {
   /** Una fila PMV por CUM (la de vigencia más reciente). */
   async loadPmvByCumKeys(cumKeys: string[]): Promise<Map<string, PmvPriceRow>> {
     const map = new Map<string, PmvPriceRow>();
+    if (this.pmvSchemaMissing) return map;
+
     const unique = [
       ...new Set(cumKeys.map((k) => normalizeCumKey(k)).filter(Boolean)),
     ];
     if (!unique.length) return map;
 
     const chunkSize = 400;
-    for (let i = 0; i < unique.length; i += chunkSize) {
-      const chunk = unique.slice(i, i + chunkSize);
-      const rows = await this.dataSource.query<PmvPriceRow[]>(
-        `SELECT UPPER(TRIM(cum)) AS cum,
-                precio_max_institucional AS "precioMaxInstitucional",
-                margen_ips AS "margenIps",
-                fecha_inicio_vigencia AS "fechaInicioVigencia"
-         FROM invima_pmv_registros
-         WHERE UPPER(TRIM(cum)) = ANY($1::text[])
-         ORDER BY fecha_inicio_vigencia DESC NULLS LAST`,
-        [chunk],
-      );
-      for (const row of rows) {
-        const key = normalizeCumKey(row.cum);
-        if (key && !map.has(key)) {
-          map.set(key, row);
+    try {
+      for (let i = 0; i < unique.length; i += chunkSize) {
+        const chunk = unique.slice(i, i + chunkSize);
+        const rows = await this.dataSource.query<PmvPriceRow[]>(
+          `SELECT UPPER(TRIM(cum)) AS cum,
+                  precio_max_institucional AS "precioMaxInstitucional",
+                  margen_ips AS "margenIps",
+                  fecha_inicio_vigencia AS "fechaInicioVigencia"
+           FROM invima_pmv_registros
+           WHERE UPPER(TRIM(cum)) = ANY($1::text[])
+           ORDER BY fecha_inicio_vigencia DESC NULLS LAST`,
+          [chunk],
+        );
+        for (const row of rows) {
+          const key = normalizeCumKey(row.cum);
+          if (key && !map.has(key)) {
+            map.set(key, row);
+          }
         }
       }
+    } catch (error) {
+      if (this.isMissingPmvSchemaError(error)) {
+        this.markPmvSchemaMissing(error);
+        return map;
+      }
+      throw error;
     }
     return map;
   }
@@ -87,6 +126,10 @@ export class InvimaPmvService {
     const page = Math.max(1, params.page ?? 1);
     const limit = Math.min(100, Math.max(1, params.limit ?? 25));
     const offset = (page - 1) * limit;
+
+    if (this.pmvSchemaMissing) {
+      return { items: [], columns: [...INVIMA_PMV_COLUMNS], total: 0, page, limit };
+    }
 
     const conditions: string[] = ['1=1'];
     const args: unknown[] = [];
@@ -108,41 +151,49 @@ export class InvimaPmvService {
 
     const where = conditions.join(' AND ');
 
-    const [countRow] = await this.dataSource.query(
-      `SELECT COUNT(*)::int AS total FROM invima_pmv_registros r WHERE ${where}`,
-      args,
-    );
+    try {
+      const [countRow] = await this.dataSource.query(
+        `SELECT COUNT(*)::int AS total FROM invima_pmv_registros r WHERE ${where}`,
+        args,
+      );
 
-    const rows = await this.dataSource.query(
-      `SELECT r.id,
-              r.numero,
-              r.id_mr AS "idMr",
-              r.mercado_relevante AS "mercadoRelevante",
-              r.cum,
-              r.medicamento,
-              r.cantidad_unidad_medida AS "cantidadUnidadMedida",
-              r.unidad_medida AS "unidadMedida",
-              r.precio_max_institucional AS "precioMaxInstitucional",
-              r.margen_ips AS "margenIps",
-              r.precio_max_comercial_ps AS "precioMaxComercialPs",
-              r.precio_max_comercial_final AS "precioMaxComercialFinal",
-              r.circular_cnpmdm AS "circularCnpmdm",
-              r.fecha_inicio_vigencia AS "fechaInicioVigencia",
-              r.ajuste_julio_2025 AS "ajusteJulio2025"
-       FROM invima_pmv_registros r
-       WHERE ${where}
-       ORDER BY r.cum NULLS LAST, r.medicamento NULLS LAST, r.id
-       LIMIT $${n++} OFFSET $${n++}`,
-      [...args, limit, offset],
-    );
+      const rows = await this.dataSource.query(
+        `SELECT r.id,
+                r.numero,
+                r.id_mr AS "idMr",
+                r.mercado_relevante AS "mercadoRelevante",
+                r.cum,
+                r.medicamento,
+                r.cantidad_unidad_medida AS "cantidadUnidadMedida",
+                r.unidad_medida AS "unidadMedida",
+                r.precio_max_institucional AS "precioMaxInstitucional",
+                r.margen_ips AS "margenIps",
+                r.precio_max_comercial_ps AS "precioMaxComercialPs",
+                r.precio_max_comercial_final AS "precioMaxComercialFinal",
+                r.circular_cnpmdm AS "circularCnpmdm",
+                r.fecha_inicio_vigencia AS "fechaInicioVigencia",
+                r.ajuste_julio_2025 AS "ajusteJulio2025"
+         FROM invima_pmv_registros r
+         WHERE ${where}
+         ORDER BY r.cum NULLS LAST, r.medicamento NULLS LAST, r.id
+         LIMIT $${n++} OFFSET $${n++}`,
+        [...args, limit, offset],
+      );
 
-    return {
-      items: rows,
-      columns: [...INVIMA_PMV_COLUMNS],
-      total: countRow?.total ?? 0,
-      page,
-      limit,
-    };
+      return {
+        items: rows,
+        columns: [...INVIMA_PMV_COLUMNS],
+        total: countRow?.total ?? 0,
+        page,
+        limit,
+      };
+    } catch (error) {
+      if (this.isMissingPmvSchemaError(error)) {
+        this.markPmvSchemaMissing(error);
+        return { items: [], columns: [...INVIMA_PMV_COLUMNS], total: 0, page, limit };
+      }
+      throw error;
+    }
   }
 
   async importFromBuffer(options: {
@@ -170,9 +221,18 @@ export class InvimaPmvService {
     const replaceExisting = options.replaceExisting !== false;
 
     return this.dataSource.transaction(async (manager) => {
-      if (replaceExisting) {
-        await manager.query(`DELETE FROM invima_pmv_registros`);
-        await manager.query(`DELETE FROM invima_pmv_import_batches`);
+      try {
+        if (replaceExisting) {
+          await manager.query(`DELETE FROM invima_pmv_registros`);
+          await manager.query(`DELETE FROM invima_pmv_import_batches`);
+        }
+      } catch (error) {
+        if (this.isMissingPmvSchemaError(error)) {
+          throw new BadRequestException(
+            'Tablas PMV no creadas. Ejecute la migración 029 (scripts/apply-migration-029.ps1) en la base de datos.',
+          );
+        }
+        throw error;
       }
 
       const [batch] = await manager.query<{ id: string }[]>(

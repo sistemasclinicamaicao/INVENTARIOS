@@ -18,7 +18,7 @@ export function useAuth() {
       notificationCount: number
       permissions: string[]
       roles: string[]
-    }>('/users/me')
+    }>('/users/me', { quiet: true })
     if (data) {
       session.setFromProfile(data)
       return data

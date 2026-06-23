@@ -57,7 +57,9 @@ export function useApi() {
           if (!ok) logout()
         }
       }
-      const skipLog = quiet && (err?.statusCode === 404 || err?.statusCode === 400)
+      const skipLog =
+        quiet &&
+        (err?.statusCode === 404 || err?.statusCode === 400 || err?.statusCode === 401)
       if (!skipLog) console.error(`[API] ${path}`, message)
       return { data: null, error: message }
     }
