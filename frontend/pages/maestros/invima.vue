@@ -26,6 +26,11 @@ import {
   type InvimaTableColumn,
 } from '~/composables/useInvimaColumns'
 import type { ExpiredInvimaItem } from '~/components/maestros/InvimaExpiredAlertModal.vue'
+import {
+  exportRowsToExcel,
+  fetchAllPaginated,
+  type ExcelExportColumn,
+} from '~/composables/useExcelExport'
 
 definePageMeta({
   layout: 'app',
@@ -1044,6 +1049,278 @@ const estadosActiveFiltersCount = computed(() => {
   if (estadosFilter.value !== 'ALL') n++
   return n
 })
+
+const exportingTab = ref<MainTab | null>(null)
+const exportProgress = ref('')
+
+function isExporting(tab: MainTab) {
+  return exportingTab.value === tab
+}
+
+function exportStamp() {
+  return new Date().toISOString().slice(0, 10)
+}
+
+const excelBtnClass =
+  'text-sm px-3 py-1.5 rounded-lg border border-emerald-200 bg-emerald-50 text-emerald-800 hover:bg-emerald-100 disabled:opacity-40 shrink-0'
+
+function buildInvimaSearchParams(pageNum: number, limit: number) {
+  const params = new URLSearchParams()
+  if (q.value.trim()) params.set('q', q.value.trim())
+  if (cum.value.trim()) params.set('cum', cum.value.trim())
+  if (listType.value) params.set('listType', listType.value)
+  params.set('page', String(pageNum))
+  params.set('limit', String(limit))
+  return params
+}
+
+async function exportInvimaCumExcel() {
+  if (!result.value?.total) return
+  exportingTab.value = 'invima-cum'
+  exportProgress.value = ''
+  try {
+    const cols = tableColumns.value
+    const columns: ExcelExportColumn<InvimaRow>[] = cols.map((col) => ({
+      key: col.key,
+      label: col.label,
+      value: (row) => {
+        if (col.key === 'listType') {
+          return listLabels[row.listType] ?? row.listType ?? ''
+        }
+        const text = formatInvimaCell(row, col)
+        return text === '—' ? '' : text
+      },
+    }))
+    const rows = await fetchAllPaginated<InvimaRow>({
+      pageLimit: 100,
+      onProgress: (loaded, total) => {
+        exportProgress.value = `${loaded.toLocaleString()}/${total.toLocaleString()}`
+      },
+      fetchPage: async (pageNum, limit) => {
+        const { data } = await fetchApi<SearchResult>(
+          `/masters/invima/search?${buildInvimaSearchParams(pageNum, limit)}`,
+        )
+        return data ? { items: data.items, total: data.total } : null
+      },
+    })
+    exportRowsToExcel(`invima-cum-${exportStamp()}.xlsx`, 'INVIMA CUM', columns, rows)
+  } finally {
+    exportingTab.value = null
+    exportProgress.value = ''
+  }
+}
+
+async function exportKrystalosExcel() {
+  if (!krystalosResult.value?.total) return
+  exportingTab.value = 'krystalos'
+  exportProgress.value = ''
+  try {
+    const colKeys = krystalosResult.value.columns?.length
+      ? krystalosResult.value.columns
+      : [...KRYSTALOS_DEFAULT_COLUMNS]
+    const columns: ExcelExportColumn[] = colKeys.map((col) => ({
+      key: col,
+      label: krystalosColLabel(col),
+      value: (row) => {
+        const text = formatKrystalosCell(col, row[col])
+        return text === '—' ? '' : text
+      },
+    }))
+    const rows = await fetchAllPaginated<Record<string, unknown>>({
+      pageLimit: 200,
+      onProgress: (loaded, total) => {
+        exportProgress.value = `${loaded.toLocaleString()}/${total.toLocaleString()}`
+      },
+      fetchPage: async (pageNum, limit) => {
+        const params = new URLSearchParams()
+        if (krystalosQ.value.trim()) params.set('q', krystalosQ.value.trim())
+        params.set('page', String(pageNum))
+        params.set('limit', String(limit))
+        const { data } = await fetchApi<KrystalosSearchResult>(
+          `/integrations/external/rest/krystalos-medicamentos?${params}`,
+        )
+        return data ? { items: data.items, total: data.total } : null
+      },
+    })
+    exportRowsToExcel(`krystalos-${exportStamp()}.xlsx`, 'Krystalos', columns, rows)
+  } finally {
+    exportingTab.value = null
+    exportProgress.value = ''
+  }
+}
+
+async function exportPosExcel() {
+  if (!posResult.value?.total) return
+  exportingTab.value = 'pos'
+  exportProgress.value = ''
+  try {
+    const colKeys = posResult.value.columns?.length ? posResult.value.columns : []
+    const columns: ExcelExportColumn[] = colKeys.map((col) => ({
+      key: col,
+      label: medicamentosPosColLabel(col),
+      value: (row) => {
+        const text = formatPosCell(col, row[col])
+        return text === '—' ? '' : text
+      },
+    }))
+    const rows = await fetchAllPaginated<Record<string, unknown>>({
+      pageLimit: 100,
+      onProgress: (loaded, total) => {
+        exportProgress.value = `${loaded.toLocaleString()}/${total.toLocaleString()}`
+      },
+      fetchPage: async (pageNum, limit) => {
+        const params = new URLSearchParams()
+        if (posQ.value.trim()) params.set('q', posQ.value.trim())
+        params.set('page', String(pageNum))
+        params.set('limit', String(limit))
+        const { data } = await fetchApi<PosSearchResult>(
+          `/masters/medicamentos-pos/search?${params}`,
+        )
+        return data ? { items: data.items, total: data.total } : null
+      },
+    })
+    exportRowsToExcel(`medicamentos-pos-${exportStamp()}.xlsx`, 'Medicamentos POS', columns, rows)
+  } finally {
+    exportingTab.value = null
+    exportProgress.value = ''
+  }
+}
+
+async function exportPmvExcel() {
+  if (!pmvResult.value?.total) return
+  exportingTab.value = 'pmv'
+  exportProgress.value = ''
+  try {
+    const colKeys = pmvResult.value.columns?.length
+      ? pmvResult.value.columns
+      : ['cum', 'medicamento', 'precioMaxComercialFinal', 'fechaInicioVigencia']
+    const columns: ExcelExportColumn[] = colKeys.map((col) => ({
+      key: col,
+      label: invimaPmvColLabel(col),
+      value: (row) => {
+        const text = formatPmvCell(col, row[col])
+        return text === '—' ? '' : text
+      },
+    }))
+    const rows = await fetchAllPaginated<Record<string, unknown>>({
+      pageLimit: 100,
+      onProgress: (loaded, total) => {
+        exportProgress.value = `${loaded.toLocaleString()}/${total.toLocaleString()}`
+      },
+      fetchPage: async (pageNum, limit) => {
+        const params = new URLSearchParams()
+        if (pmvQ.value.trim()) params.set('q', pmvQ.value.trim())
+        if (pmvCum.value.trim()) params.set('cum', pmvCum.value.trim())
+        params.set('page', String(pageNum))
+        params.set('limit', String(limit))
+        const { data } = await fetchApi<PmvSearchResult>(
+          `/masters/invima-pmv/search?${params}`,
+        )
+        return data ? { items: data.items, total: data.total } : null
+      },
+    })
+    exportRowsToExcel(`precios-pmv-${exportStamp()}.xlsx`, 'Precios PMV', columns, rows)
+  } finally {
+    exportingTab.value = null
+    exportProgress.value = ''
+  }
+}
+
+const ESTADOS_EXPORT_COLUMNS: ExcelExportColumn<EstadoRow>[] = [
+  { key: 'posLabel', label: 'Medicamento POS' },
+  { key: 'invimaMatched', label: 'Match INVIMA', value: (r) => (r.invimaMatched ? 'Sí' : 'No') },
+  { key: 'idArticulo', label: 'Cód. Krystalos' },
+  { key: 'descripcion', label: 'Descripción Krystalos' },
+  { key: 'codcum', label: 'CUM' },
+  {
+    key: 'pmvPrecioUnitario',
+    label: 'Precio unit. institucional',
+    value: (r) => (r.pmvPrecioUnitario != null ? r.pmvPrecioUnitario : ''),
+  },
+  { key: 'pmvRegulado', label: 'Medicamento regulado', value: (r) => (r.pmvRegulado ? 'Sí' : 'No') },
+  { key: 'estadoLabel', label: 'Estado' },
+  {
+    key: 'invimaListType',
+    label: 'Listado INVIMA',
+    value: (r) => (r.invimaListType ? listLabels[r.invimaListType] ?? r.invimaListType : ''),
+  },
+  {
+    key: 'invimaFechaVencimiento',
+    label: 'Vence',
+    value: (r) => formatEstadoVence(r),
+  },
+  { key: 'invimaProducto', label: 'Producto INVIMA' },
+]
+
+async function exportEstadosExcel() {
+  if (!estadosResult.value?.total) return
+  exportingTab.value = 'estados'
+  exportProgress.value = ''
+  try {
+    const rows = await fetchAllPaginated<EstadoRow>({
+      pageLimit: 200,
+      onProgress: (loaded, total) => {
+        exportProgress.value = `${loaded.toLocaleString()}/${total.toLocaleString()}`
+      },
+      fetchPage: async (pageNum, limit) => {
+        const params = new URLSearchParams()
+        if (estadosQ.value.trim()) params.set('q', estadosQ.value.trim())
+        if (estadosCodigo.value.trim()) params.set('codigo', estadosCodigo.value.trim())
+        if (estadosCum.value.trim()) params.set('cum', estadosCum.value.trim())
+        if (estadosDescripcion.value.trim()) {
+          params.set('descripcion', estadosDescripcion.value.trim())
+        }
+        if (estadosListType.value) params.set('listType', estadosListType.value)
+        if (estadosFilter.value !== 'ALL') params.set('estado', estadosFilter.value)
+        params.set('page', String(pageNum))
+        params.set('limit', String(limit))
+        const { data } = await fetchApi<EstadosResult>(
+          `/integrations/external/rest/krystalos-invimaf-estados?${params}`,
+        )
+        return data ? { items: data.items, total: data.total } : null
+      },
+    })
+    exportRowsToExcel(`estados-krystalos-invimaf-${exportStamp()}.xlsx`, 'Estados', ESTADOS_EXPORT_COLUMNS, rows)
+  } finally {
+    exportingTab.value = null
+    exportProgress.value = ''
+  }
+}
+
+function exportSyncExcel() {
+  if (!syncCatalog.value.length) return
+  exportingTab.value = 'sync'
+  try {
+    const columns: ExcelExportColumn<SyncCatalogItem>[] = [
+      { key: 'label', label: 'Listado', value: (r) => syncCatalogRowLabel(r) },
+      { key: 'datasetId', label: 'Dataset' },
+      {
+        key: 'rowsImported',
+        label: 'Registros',
+        value: (r) => (r.rowsImported != null ? r.rowsImported : ''),
+      },
+      {
+        key: 'importedAt',
+        label: 'Última carga',
+        value: (r) => formatBatchDate(r.importedAt ?? undefined),
+      },
+      {
+        key: 'portalUpdatedAt',
+        label: 'Actualización portal',
+        value: (r) =>
+          r.key === 'KRYSTALOS' ? '' : formatBatchDate(r.portalUpdatedAt ?? undefined),
+      },
+    ]
+    exportRowsToExcel(
+      `sincronizacion-catalogo-${exportStamp()}.xlsx`,
+      'Sincronización',
+      columns,
+      syncCatalog.value,
+    )
+  } finally {
+    exportingTab.value = null
+  }
+}
 </script>
 
 <template>
@@ -1171,6 +1448,14 @@ const estadosActiveFiltersCount = computed(() => {
           <template v-else>Sin búsqueda</template>
         </span>
         <div class="flex gap-1.5">
+          <button
+            type="button"
+            :class="excelBtnClass"
+            :disabled="isExporting('invima-cum') || loading || !result?.total"
+            @click="exportInvimaCumExcel"
+          >
+            {{ isExporting('invima-cum') ? exportProgress || 'Exportando…' : '↓ Excel' }}
+          </button>
           <button
             type="button"
             class="text-sm px-3 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 disabled:opacity-40"
@@ -1305,6 +1590,14 @@ const estadosActiveFiltersCount = computed(() => {
           <p v-if="syncMsg" class="text-xs text-emerald-200 max-w-md text-right">
             {{ syncMsg }}
           </p>
+          <button
+            type="button"
+            :class="excelBtnClass"
+            :disabled="isExporting('sync') || !syncCatalog.length"
+            @click="exportSyncExcel"
+          >
+            {{ isExporting('sync') ? 'Exportando…' : '↓ Excel' }}
+          </button>
           <button
             type="button"
             class="shrink-0 inline-flex items-center gap-2 bg-white text-indigo-900 hover:bg-indigo-50 px-4 py-2 rounded-lg text-sm font-medium shadow-sm disabled:opacity-50 transition"
@@ -1705,6 +1998,14 @@ const estadosActiveFiltersCount = computed(() => {
           <div class="flex flex-wrap items-center gap-1.5">
             <button
               type="button"
+              :class="excelBtnClass"
+              :disabled="isExporting('estados') || estadosLoading || !estadosResult?.total"
+              @click="exportEstadosExcel"
+            >
+              {{ isExporting('estados') ? exportProgress || 'Exportando…' : '↓ Excel' }}
+            </button>
+            <button
+              type="button"
               class="text-sm px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 disabled:opacity-40"
               :disabled="estadosPage <= 1 || estadosLoading"
               title="Primera página"
@@ -1905,6 +2206,14 @@ const estadosActiveFiltersCount = computed(() => {
           <div class="flex gap-1.5">
             <button
               type="button"
+              :class="excelBtnClass"
+              :disabled="isExporting('krystalos') || krystalosLoading || !krystalosResult?.total"
+              @click="exportKrystalosExcel"
+            >
+              {{ isExporting('krystalos') ? exportProgress || 'Exportando…' : '↓ Excel' }}
+            </button>
+            <button
+              type="button"
               class="text-sm px-3 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 disabled:opacity-40"
               :disabled="krystalosPage <= 1 || krystalosLoading"
               @click="krystalosPrevPage"
@@ -2034,6 +2343,14 @@ const estadosActiveFiltersCount = computed(() => {
             <template v-else>Sin búsqueda</template>
           </span>
           <div class="flex gap-1.5">
+            <button
+              type="button"
+              :class="excelBtnClass"
+              :disabled="isExporting('pos') || posLoading || !posResult?.total"
+              @click="exportPosExcel"
+            >
+              {{ isExporting('pos') ? exportProgress || 'Exportando…' : '↓ Excel' }}
+            </button>
             <button
               type="button"
               class="text-sm px-3 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 disabled:opacity-40"
@@ -2199,6 +2516,14 @@ const estadosActiveFiltersCount = computed(() => {
             </span>
           </div>
           <div class="flex gap-1.5 shrink-0">
+            <button
+              type="button"
+              :class="excelBtnClass"
+              :disabled="isExporting('pmv') || pmvLoading || !pmvResult?.total"
+              @click="exportPmvExcel"
+            >
+              {{ isExporting('pmv') ? exportProgress || 'Exportando…' : '↓ Excel' }}
+            </button>
             <button
               type="button"
               class="text-sm px-3 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 disabled:opacity-40"
