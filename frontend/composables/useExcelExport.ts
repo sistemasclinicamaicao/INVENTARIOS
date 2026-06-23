@@ -1,9 +1,18 @@
 import * as XLSX from 'xlsx'
 
-export interface ExcelExportColumn<TRow extends Record<string, unknown> = Record<string, unknown>> {
+const XLSX_MIME =
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+
+export interface ExcelExportColumn<TRow = Record<string, unknown>> {
   key: string
   label: string
   value?: (row: TRow) => unknown
+}
+
+export interface ExcelExportSession {
+  filename: string
+  sheetName: string
+  fileHandle: FileSystemFileHandle | null
 }
 
 function cellValue(raw: unknown): string | number {
@@ -13,17 +22,21 @@ function cellValue(raw: unknown): string | number {
   return String(raw)
 }
 
-/** Genera un .xlsx con cabecera en la primera fila. */
-export function exportRowsToExcel(
-  filename: string,
+function normalizeFilename(filename: string) {
+  return filename.endsWith('.xlsx') ? filename : `${filename}.xlsx`
+}
+
+function buildWorkbook<TRow>(
   sheetName: string,
-  columns: ExcelExportColumn[],
-  rows: Record<string, unknown>[],
+  columns: ExcelExportColumn<TRow>[],
+  rows: TRow[],
 ) {
   const headerRow = columns.map((c) => c.label)
   const body = rows.map((row) =>
     columns.map((col) => {
-      const raw = col.value ? col.value(row) : row[col.key]
+      const raw = col.value
+        ? col.value(row)
+        : (row as Record<string, unknown>)[col.key]
       return cellValue(raw)
     }),
   )
@@ -31,8 +44,90 @@ export function exportRowsToExcel(
   const wb = XLSX.utils.book_new()
   const safeSheet = sheetName.replace(/[\\/*?:[\]]/g, '').slice(0, 31) || 'Datos'
   XLSX.utils.book_append_sheet(wb, ws, safeSheet)
-  const out = filename.endsWith('.xlsx') ? filename : `${filename}.xlsx`
-  XLSX.writeFile(wb, out)
+  return wb
+}
+
+function downloadBufferAsFile(filename: string, buf: ArrayBuffer) {
+  const blob = new Blob([buf], { type: XLSX_MIME })
+  const url = URL.createObjectURL(blob)
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = filename
+  anchor.rel = 'noopener'
+  anchor.style.display = 'none'
+  document.body.appendChild(anchor)
+  anchor.click()
+  anchor.remove()
+  window.setTimeout(() => URL.revokeObjectURL(url), 60_000)
+}
+
+/**
+ * Llamar al inicio del clic (antes de cargar datos).
+ * En Chrome/Edge abre "Guardar como" mientras el gesto del usuario sigue activo.
+ */
+export async function beginExcelExport(
+  filename: string,
+  sheetName: string,
+): Promise<ExcelExportSession | null> {
+  const out = normalizeFilename(filename)
+  let fileHandle: FileSystemFileHandle | null = null
+
+  if (typeof window !== 'undefined' && 'showSaveFilePicker' in window) {
+    try {
+      const savePicker = (
+        window as Window & {
+          showSaveFilePicker: (options: {
+            suggestedName?: string
+            types?: Array<{ description: string; accept: Record<string, string[]> }>
+          }) => Promise<FileSystemFileHandle>
+        }
+      ).showSaveFilePicker
+      fileHandle = await savePicker({
+        suggestedName: out,
+        types: [
+          {
+            description: 'Excel (.xlsx)',
+            accept: { [XLSX_MIME]: ['.xlsx'] },
+          },
+        ],
+      })
+    } catch (error) {
+      if ((error as DOMException).name === 'AbortError') return null
+    }
+  }
+
+  return { filename: out, sheetName, fileHandle }
+}
+
+/** Escribe el archivo tras cargar todas las filas. */
+export async function finishExcelExport<TRow>(
+  session: ExcelExportSession,
+  columns: ExcelExportColumn<TRow>[],
+  rows: TRow[],
+) {
+  const wb = buildWorkbook(session.sheetName, columns, rows)
+  const buf = XLSX.write(wb, { bookType: 'xlsx', type: 'array' }) as ArrayBuffer
+
+  if (session.fileHandle) {
+    const writable = await session.fileHandle.createWritable()
+    await writable.write(new Blob([buf], { type: XLSX_MIME }))
+    await writable.close()
+    return
+  }
+
+  downloadBufferAsFile(session.filename, buf)
+}
+
+/** Exportación inmediata (tablas pequeñas, sin espera async). */
+export async function exportRowsToExcel<TRow>(
+  filename: string,
+  sheetName: string,
+  columns: ExcelExportColumn<TRow>[],
+  rows: TRow[],
+) {
+  const session = await beginExcelExport(filename, sheetName)
+  if (!session) return
+  await finishExcelExport(session, columns, rows)
 }
 
 export async function fetchAllPaginated<T>(options: {

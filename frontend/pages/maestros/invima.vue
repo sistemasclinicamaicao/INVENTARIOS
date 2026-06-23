@@ -27,6 +27,8 @@ import {
 } from '~/composables/useInvimaColumns'
 import type { ExpiredInvimaItem } from '~/components/maestros/InvimaExpiredAlertModal.vue'
 import {
+  beginExcelExport,
+  finishExcelExport,
   exportRowsToExcel,
   fetchAllPaginated,
   type ExcelExportColumn,
@@ -894,6 +896,76 @@ const estadosLoading = ref(false)
 const estadosError = ref('')
 const estadosResult = ref<EstadosResult | null>(null)
 
+type EstadosSortKey =
+  | 'posLabel'
+  | 'invimaMatched'
+  | 'idArticulo'
+  | 'descripcion'
+  | 'codcum'
+  | 'pmvPrecioUnitario'
+  | 'pmvRegulado'
+  | 'estadoLabel'
+  | 'invimaListType'
+  | 'invimaFechaVencimiento'
+  | 'invimaProducto'
+
+const estadosSortBy = ref<EstadosSortKey | null>(null)
+const estadosSortDir = ref<'asc' | 'desc'>('desc')
+
+const estadosTableColumns: Array<{
+  key: EstadosSortKey
+  label: string
+  thClass: string
+}> = [
+  { key: 'posLabel', label: 'Medicamento POS', thClass: 'px-4 py-3.5 w-36 font-semibold whitespace-nowrap' },
+  { key: 'invimaMatched', label: 'Match', thClass: 'px-4 py-3.5 w-16 text-center font-semibold' },
+  { key: 'idArticulo', label: 'Cód. Krystalos', thClass: 'px-4 py-3.5 w-28 font-semibold' },
+  { key: 'descripcion', label: 'Descripción Krystalos', thClass: 'px-4 py-3.5 min-w-[260px] font-semibold' },
+  { key: 'codcum', label: 'CUM', thClass: 'px-4 py-3.5 w-32 font-semibold' },
+  {
+    key: 'pmvPrecioUnitario',
+    label: 'Precio unit. institucional',
+    thClass: 'px-4 py-3.5 w-36 font-semibold whitespace-nowrap',
+  },
+  {
+    key: 'pmvRegulado',
+    label: 'Medicamento regulado',
+    thClass: 'px-4 py-3.5 w-36 font-semibold whitespace-nowrap',
+  },
+  { key: 'estadoLabel', label: 'Estado', thClass: 'px-4 py-3.5 w-36 font-semibold' },
+  { key: 'invimaListType', label: 'Listado INVIMA', thClass: 'px-4 py-3.5 w-40 font-semibold' },
+  { key: 'invimaFechaVencimiento', label: 'Vence', thClass: 'px-4 py-3.5 w-28 font-semibold' },
+  { key: 'invimaProducto', label: 'Producto INVIMA', thClass: 'px-4 py-3.5 min-w-[220px] font-semibold' },
+]
+
+function appendEstadosApiParams(params: URLSearchParams) {
+  if (estadosQ.value.trim()) params.set('q', estadosQ.value.trim())
+  if (estadosCodigo.value.trim()) params.set('codigo', estadosCodigo.value.trim())
+  if (estadosCum.value.trim()) params.set('cum', estadosCum.value.trim())
+  if (estadosDescripcion.value.trim()) params.set('descripcion', estadosDescripcion.value.trim())
+  if (estadosListType.value) params.set('listType', estadosListType.value)
+  if (estadosFilter.value !== 'ALL') params.set('estado', estadosFilter.value)
+  if (estadosSortBy.value) {
+    params.set('sortBy', estadosSortBy.value)
+    params.set('sortDir', estadosSortDir.value)
+  }
+}
+
+function toggleEstadosSort(key: EstadosSortKey) {
+  if (estadosSortBy.value === key) {
+    estadosSortDir.value = estadosSortDir.value === 'desc' ? 'asc' : 'desc'
+  } else {
+    estadosSortBy.value = key
+    estadosSortDir.value = 'desc'
+  }
+  loadEstados(true)
+}
+
+function estadosSortIndicator(key: EstadosSortKey) {
+  if (estadosSortBy.value !== key) return ''
+  return estadosSortDir.value === 'desc' ? ' ↓' : ' ↑'
+}
+
 const estadosTotalPages = computed(() =>
   estadosResult.value?.totalPages ??
   (estadosResult.value
@@ -961,14 +1033,9 @@ async function loadEstados(resetPage = true, refresh = false) {
   estadosLoading.value = true
   estadosError.value = ''
   const params = new URLSearchParams()
-  if (estadosQ.value.trim()) params.set('q', estadosQ.value.trim())
-  if (estadosCodigo.value.trim()) params.set('codigo', estadosCodigo.value.trim())
-  if (estadosCum.value.trim()) params.set('cum', estadosCum.value.trim())
-  if (estadosDescripcion.value.trim()) params.set('descripcion', estadosDescripcion.value.trim())
-  if (estadosListType.value) params.set('listType', estadosListType.value)
+  appendEstadosApiParams(params)
   params.set('page', String(estadosPage.value))
   params.set('limit', String(estadosLimit.value))
-  if (estadosFilter.value !== 'ALL') params.set('estado', estadosFilter.value)
   if (refresh) params.set('refresh', 'true')
 
   const { data, error: err } = await fetchApi<EstadosResult>(
@@ -998,6 +1065,8 @@ function clearEstadosFilters() {
   estadosDescripcion.value = ''
   estadosListType.value = ''
   estadosFilter.value = 'ALL'
+  estadosSortBy.value = null
+  estadosSortDir.value = 'desc'
   loadEstados(true)
 }
 
@@ -1076,6 +1145,8 @@ function buildInvimaSearchParams(pageNum: number, limit: number) {
 
 async function exportInvimaCumExcel() {
   if (!result.value?.total) return
+  const session = await beginExcelExport(`invima-cum-${exportStamp()}.xlsx`, 'INVIMA CUM')
+  if (!session) return
   exportingTab.value = 'invima-cum'
   exportProgress.value = ''
   try {
@@ -1103,7 +1174,7 @@ async function exportInvimaCumExcel() {
         return data ? { items: data.items, total: data.total } : null
       },
     })
-    exportRowsToExcel(`invima-cum-${exportStamp()}.xlsx`, 'INVIMA CUM', columns, rows)
+    await finishExcelExport(session, columns, rows)
   } finally {
     exportingTab.value = null
     exportProgress.value = ''
@@ -1112,6 +1183,8 @@ async function exportInvimaCumExcel() {
 
 async function exportKrystalosExcel() {
   if (!krystalosResult.value?.total) return
+  const session = await beginExcelExport(`krystalos-${exportStamp()}.xlsx`, 'Krystalos')
+  if (!session) return
   exportingTab.value = 'krystalos'
   exportProgress.value = ''
   try {
@@ -1142,7 +1215,7 @@ async function exportKrystalosExcel() {
         return data ? { items: data.items, total: data.total } : null
       },
     })
-    exportRowsToExcel(`krystalos-${exportStamp()}.xlsx`, 'Krystalos', columns, rows)
+    await finishExcelExport(session, columns, rows)
   } finally {
     exportingTab.value = null
     exportProgress.value = ''
@@ -1151,6 +1224,11 @@ async function exportKrystalosExcel() {
 
 async function exportPosExcel() {
   if (!posResult.value?.total) return
+  const session = await beginExcelExport(
+    `medicamentos-pos-${exportStamp()}.xlsx`,
+    'Medicamentos POS',
+  )
+  if (!session) return
   exportingTab.value = 'pos'
   exportProgress.value = ''
   try {
@@ -1179,7 +1257,7 @@ async function exportPosExcel() {
         return data ? { items: data.items, total: data.total } : null
       },
     })
-    exportRowsToExcel(`medicamentos-pos-${exportStamp()}.xlsx`, 'Medicamentos POS', columns, rows)
+    await finishExcelExport(session, columns, rows)
   } finally {
     exportingTab.value = null
     exportProgress.value = ''
@@ -1188,6 +1266,8 @@ async function exportPosExcel() {
 
 async function exportPmvExcel() {
   if (!pmvResult.value?.total) return
+  const session = await beginExcelExport(`precios-pmv-${exportStamp()}.xlsx`, 'Precios PMV')
+  if (!session) return
   exportingTab.value = 'pmv'
   exportProgress.value = ''
   try {
@@ -1219,7 +1299,7 @@ async function exportPmvExcel() {
         return data ? { items: data.items, total: data.total } : null
       },
     })
-    exportRowsToExcel(`precios-pmv-${exportStamp()}.xlsx`, 'Precios PMV', columns, rows)
+    await finishExcelExport(session, columns, rows)
   } finally {
     exportingTab.value = null
     exportProgress.value = ''
@@ -1254,6 +1334,11 @@ const ESTADOS_EXPORT_COLUMNS: ExcelExportColumn<EstadoRow>[] = [
 
 async function exportEstadosExcel() {
   if (!estadosResult.value?.total) return
+  const session = await beginExcelExport(
+    `estados-krystalos-invimaf-${exportStamp()}.xlsx`,
+    'Estados',
+  )
+  if (!session) return
   exportingTab.value = 'estados'
   exportProgress.value = ''
   try {
@@ -1264,14 +1349,7 @@ async function exportEstadosExcel() {
       },
       fetchPage: async (pageNum, limit) => {
         const params = new URLSearchParams()
-        if (estadosQ.value.trim()) params.set('q', estadosQ.value.trim())
-        if (estadosCodigo.value.trim()) params.set('codigo', estadosCodigo.value.trim())
-        if (estadosCum.value.trim()) params.set('cum', estadosCum.value.trim())
-        if (estadosDescripcion.value.trim()) {
-          params.set('descripcion', estadosDescripcion.value.trim())
-        }
-        if (estadosListType.value) params.set('listType', estadosListType.value)
-        if (estadosFilter.value !== 'ALL') params.set('estado', estadosFilter.value)
+        appendEstadosApiParams(params)
         params.set('page', String(pageNum))
         params.set('limit', String(limit))
         const { data } = await fetchApi<EstadosResult>(
@@ -1280,14 +1358,14 @@ async function exportEstadosExcel() {
         return data ? { items: data.items, total: data.total } : null
       },
     })
-    exportRowsToExcel(`estados-krystalos-invimaf-${exportStamp()}.xlsx`, 'Estados', ESTADOS_EXPORT_COLUMNS, rows)
+    await finishExcelExport(session, ESTADOS_EXPORT_COLUMNS, rows)
   } finally {
     exportingTab.value = null
     exportProgress.value = ''
   }
 }
 
-function exportSyncExcel() {
+async function exportSyncExcel() {
   if (!syncCatalog.value.length) return
   exportingTab.value = 'sync'
   try {
@@ -1311,7 +1389,7 @@ function exportSyncExcel() {
           r.key === 'KRYSTALOS' ? '' : formatBatchDate(r.portalUpdatedAt ?? undefined),
       },
     ]
-    exportRowsToExcel(
+    await exportRowsToExcel(
       `sincronizacion-catalogo-${exportStamp()}.xlsx`,
       'Sincronización',
       columns,
@@ -2048,17 +2126,19 @@ function exportSyncExcel() {
           <table class="w-full text-sm border-collapse min-w-[960px]">
             <thead class="bg-slate-800 text-left text-[11px] text-slate-200 uppercase tracking-wider sticky top-0 z-10">
               <tr>
-                <th class="px-4 py-3.5 w-36 font-semibold whitespace-nowrap">Medicamento POS</th>
-                <th class="px-4 py-3.5 w-16 text-center font-semibold">Match</th>
-                <th class="px-4 py-3.5 w-28 font-semibold">Cód. Krystalos</th>
-                <th class="px-4 py-3.5 min-w-[260px] font-semibold">Descripción Krystalos</th>
-                <th class="px-4 py-3.5 w-32 font-semibold">CUM</th>
-                <th class="px-4 py-3.5 w-36 font-semibold whitespace-nowrap">Precio unit. institucional</th>
-                <th class="px-4 py-3.5 w-36 font-semibold whitespace-nowrap">Medicamento regulado</th>
-                <th class="px-4 py-3.5 w-36 font-semibold">Estado</th>
-                <th class="px-4 py-3.5 w-40 font-semibold">Listado INVIMA</th>
-                <th class="px-4 py-3.5 w-28 font-semibold">Vence</th>
-                <th class="px-4 py-3.5 min-w-[220px] font-semibold">Producto INVIMA</th>
+                <th
+                  v-for="col in estadosTableColumns"
+                  :key="col.key"
+                  :class="[
+                    col.thClass,
+                    'cursor-pointer select-none hover:bg-slate-700/80 transition-colors',
+                    estadosSortBy === col.key ? 'text-white' : '',
+                  ]"
+                  :title="`Ordenar por ${col.label}`"
+                  @click="toggleEstadosSort(col.key)"
+                >
+                  {{ col.label }}{{ estadosSortIndicator(col.key) }}
+                </th>
               </tr>
             </thead>
             <tbody class="divide-y divide-slate-100">

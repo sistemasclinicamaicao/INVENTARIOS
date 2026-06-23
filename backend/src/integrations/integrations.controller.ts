@@ -87,6 +87,8 @@ export class IntegrationsController {
     @Query('cum') cum?: string,
     @Query('descripcion') descripcion?: string,
     @Query('listType') listType?: string,
+    @Query('sortBy') sortBy?: string,
+    @Query('sortDir') sortDir?: string,
   ) {
     const allowed = [
       'ALL',
@@ -114,6 +116,8 @@ export class IntegrationsController {
       cum,
       descripcion,
       listType,
+      sortBy,
+      sortDir === 'asc' || sortDir === 'desc' ? sortDir : undefined,
     );
   }
 

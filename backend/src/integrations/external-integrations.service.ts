@@ -39,6 +39,9 @@ import {
   type EstadoFilter,
   type InvimaCumMatchRow,
   matchesEstadoFilter,
+  isValidEstadoSortKey,
+  sortKrystalosInvimaEstadoRows,
+  type SortDirection,
   normalizeCum,
   parseKrystalosMedicamento,
   pickBestInvimaMatch,
@@ -1480,6 +1483,8 @@ export class ExternalIntegrationsService {
     cum?: string,
     descripcion?: string,
     invimaListType?: string,
+    sortBy?: string,
+    sortDir?: SortDirection,
   ) {
     try {
       const safePage = Number.isFinite(page) && page > 0 ? Math.floor(page) : 1;
@@ -1602,6 +1607,14 @@ export class ExternalIntegrationsService {
       merged = merged.filter((row) => row.pmvRegulado);
     } else if (estadoFilter !== 'ALL') {
       merged = merged.filter((row) => matchesEstadoFilter(row.estadoKey, estadoFilter));
+    }
+
+    if (sortBy && isValidEstadoSortKey(sortBy)) {
+      merged = sortKrystalosInvimaEstadoRows(
+        merged,
+        sortBy,
+        sortDir ?? 'desc',
+      );
     }
 
     const total = merged.length;
