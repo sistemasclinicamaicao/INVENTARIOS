@@ -911,10 +911,10 @@ const estadosSummaryChips = computed(() => {
   if (!s) return []
   return [
     { key: 'ALL' as EstadoFilterKey, label: 'Total', count: s.total, class: 'bg-slate-100 text-slate-700' },
+    { key: 'REGULADOS' as EstadoFilterKey, label: 'Regulados', count: s.regulados ?? 0, class: 'bg-emerald-100 text-emerald-800 border border-emerald-300' },
     { key: 'VIGENTE' as EstadoFilterKey, label: 'Vigentes', count: s.vigente, class: 'bg-green-100 text-green-800' },
     { key: 'VENCIDO' as EstadoFilterKey, label: 'Vencidos', count: s.vencido, class: 'bg-red-100 text-red-800' },
     { key: 'RENOVACION' as EstadoFilterKey, label: 'Renovación', count: s.renovacion, class: 'bg-amber-100 text-amber-900' },
-    { key: 'REGULADOS' as EstadoFilterKey, label: 'Regulados', count: s.regulados ?? 0, class: 'bg-emerald-100 text-emerald-800' },
     { key: 'NOT_MATCHED' as EstadoFilterKey, label: 'Sin registro INVIMA', count: s.sinRegistro, class: 'bg-slate-200 text-slate-700' },
     ...(s.sinCum
       ? [{ key: 'SIN_CUM' as EstadoFilterKey, label: 'Sin CUM', count: s.sinCum, class: 'bg-slate-100 text-slate-600' }]
@@ -1559,7 +1559,7 @@ const estadosActiveFiltersCount = computed(() => {
 
         <div
           v-if="estadosSummaryChips.length"
-          class="px-4 py-2.5 border-b border-slate-100 bg-slate-50/90 flex flex-wrap gap-2 overflow-x-auto"
+          class="px-4 py-2.5 border-b border-slate-100 bg-slate-50/90 flex flex-wrap gap-2"
         >
           <button
             v-for="chip in estadosSummaryChips"
