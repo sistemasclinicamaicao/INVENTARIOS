@@ -4,6 +4,10 @@ import { createHash } from 'crypto';
 import { DataSource } from 'typeorm';
 import { normalizeCumKey } from '../../integrations/cum-key.util';
 import { parseInvimaPmvWorkbook, type ParsedPmvRow } from './invima-pmv.parser';
+import {
+  parseSortDirection,
+  resolveSqlOrderClause,
+} from '../../common/table-sort.util';
 
 export interface PmvPriceRow {
   cum: string;
@@ -28,6 +32,22 @@ export const INVIMA_PMV_COLUMNS = [
 ] as const;
 
 const BATCH_INSERT = 400;
+
+const PMV_SORT_SQL: Record<string, string> = {
+  cum: 'r.cum',
+  idMr: 'r.id_mr',
+  mercadoRelevante: 'r.mercado_relevante',
+  medicamento: 'r.medicamento',
+  cantidadUnidadMedida: 'r.cantidad_unidad_medida',
+  unidadMedida: 'r.unidad_medida',
+  precioMaxInstitucional: 'r.precio_max_institucional',
+  margenIps: 'r.margen_ips',
+  precioMaxComercialPs: 'r.precio_max_comercial_ps',
+  precioMaxComercialFinal: 'r.precio_max_comercial_final',
+  circularCnpmdm: 'r.circular_cnpmdm',
+  fechaInicioVigencia: 'r.fecha_inicio_vigencia',
+  ajusteJulio2025: 'r.ajuste_julio_2025',
+};
 
 @Injectable()
 export class InvimaPmvService {
@@ -122,7 +142,14 @@ export class InvimaPmvService {
     return map;
   }
 
-  async search(params: { q?: string; cum?: string; page?: number; limit?: number }) {
+  async search(params: {
+    q?: string;
+    cum?: string;
+    page?: number;
+    limit?: number;
+    sortBy?: string;
+    sortDir?: 'asc' | 'desc';
+  }) {
     const page = Math.max(1, params.page ?? 1);
     const limit = Math.min(100, Math.max(1, params.limit ?? 25));
     const offset = (page - 1) * limit;
@@ -151,6 +178,13 @@ export class InvimaPmvService {
 
     const where = conditions.join(' AND ');
 
+    const orderBy = resolveSqlOrderClause(
+      params.sortBy,
+      parseSortDirection(params.sortDir),
+      PMV_SORT_SQL,
+      'r.cum NULLS LAST, r.medicamento NULLS LAST, r.id',
+    );
+
     try {
       const [countRow] = await this.dataSource.query(
         `SELECT COUNT(*)::int AS total FROM invima_pmv_registros r WHERE ${where}`,
@@ -175,7 +209,7 @@ export class InvimaPmvService {
                 r.ajuste_julio_2025 AS "ajusteJulio2025"
          FROM invima_pmv_registros r
          WHERE ${where}
-         ORDER BY r.cum NULLS LAST, r.medicamento NULLS LAST, r.id
+         ORDER BY ${orderBy}
          LIMIT $${n++} OFFSET $${n++}`,
         [...args, limit, offset],
       );

@@ -33,6 +33,7 @@ import {
   fetchAllPaginated,
   type ExcelExportColumn,
 } from '~/composables/useExcelExport'
+import { sortRowsByKey, useTableSort } from '~/composables/useTableSort'
 
 definePageMeta({
   layout: 'app',
@@ -44,6 +45,13 @@ definePageMeta({
 
 const { fetchApi } = useApi()
 const session = useSessionStore()
+
+const invimaSort = useTableSort()
+const krystalosSort = useTableSort()
+const posSort = useTableSort()
+const pmvSort = useTableSort()
+const estadosSort = useTableSort()
+const syncSort = useTableSort()
 
 type ListType = 'VIGENTE' | 'VENCIDO' | 'RENOVACION' | 'OTRO_ESTADO' | ''
 
@@ -220,6 +228,7 @@ async function search(resetPage = true) {
   if (q.value.trim()) params.set('q', q.value.trim())
   if (cum.value.trim()) params.set('cum', cum.value.trim())
   if (listType.value) params.set('listType', listType.value)
+  invimaSort.appendToParams(params)
   params.set('page', String(page.value))
   params.set('limit', '25')
 
@@ -283,6 +292,30 @@ function syncCatalogRowLabel(item: SyncCatalogItem): string {
   if (item.listType) return listLabels[item.listType] ?? item.label
   return item.label
 }
+
+const syncTableColumns = [
+  { key: 'label', label: 'Listado', thClass: 'px-4 py-3.5 font-semibold' },
+  { key: 'datasetId', label: 'Dataset', thClass: 'px-4 py-3.5 font-semibold w-28' },
+  { key: 'rowsImported', label: 'Registros', thClass: 'px-4 py-3.5 font-semibold w-28 text-right' },
+  { key: 'importedAt', label: 'Última carga', thClass: 'px-4 py-3.5 font-semibold w-40' },
+  { key: 'portalUpdatedAt', label: 'Actualización portal', thClass: 'px-4 py-3.5 font-semibold w-40' },
+] as const
+
+const syncCatalogDisplay = computed(() => {
+  if (!syncSort.sortBy.value) return syncCatalog.value
+  return sortRowsByKey(
+    syncCatalog.value,
+    syncSort.sortBy.value,
+    syncSort.sortDir.value,
+    (item, key) => {
+      if (key === 'label') return syncCatalogRowLabel(item)
+      if (key === 'rowsImported') return item.rowsImported ?? -1
+      if (key === 'importedAt') return item.importedAt ?? ''
+      if (key === 'portalUpdatedAt') return item.portalUpdatedAt ?? ''
+      return (item as Record<string, unknown>)[key]
+    },
+  )
+})
 
 function isPortalNewer(item: SyncCatalogItem): boolean {
   if (!item.portalUpdatedAt || !item.importedAt) return false
@@ -560,6 +593,7 @@ async function loadKrystalos(resetPage = true, refresh = false) {
   krystalosError.value = ''
   const params = new URLSearchParams()
   if (krystalosQ.value.trim()) params.set('q', krystalosQ.value.trim())
+  krystalosSort.appendToParams(params)
   params.set('page', String(krystalosPage.value))
   params.set('limit', '50')
   if (refresh) params.set('refresh', 'true')
@@ -669,6 +703,7 @@ async function loadPos(resetPage = true) {
   posError.value = ''
   const params = new URLSearchParams()
   if (posQ.value.trim()) params.set('q', posQ.value.trim())
+  posSort.appendToParams(params)
   params.set('page', String(posPage.value))
   params.set('limit', '50')
 
@@ -740,6 +775,7 @@ async function loadPmv(resetPage = true) {
   const params = new URLSearchParams()
   if (pmvQ.value.trim()) params.set('q', pmvQ.value.trim())
   if (pmvCum.value.trim()) params.set('cum', pmvCum.value.trim())
+  pmvSort.appendToParams(params)
   params.set('page', String(pmvPage.value))
   params.set('limit', '50')
 
@@ -896,24 +932,8 @@ const estadosLoading = ref(false)
 const estadosError = ref('')
 const estadosResult = ref<EstadosResult | null>(null)
 
-type EstadosSortKey =
-  | 'posLabel'
-  | 'invimaMatched'
-  | 'idArticulo'
-  | 'descripcion'
-  | 'codcum'
-  | 'pmvPrecioUnitario'
-  | 'pmvRegulado'
-  | 'estadoLabel'
-  | 'invimaListType'
-  | 'invimaFechaVencimiento'
-  | 'invimaProducto'
-
-const estadosSortBy = ref<EstadosSortKey | null>(null)
-const estadosSortDir = ref<'asc' | 'desc'>('desc')
-
 const estadosTableColumns: Array<{
-  key: EstadosSortKey
+  key: string
   label: string
   thClass: string
 }> = [
@@ -945,25 +965,7 @@ function appendEstadosApiParams(params: URLSearchParams) {
   if (estadosDescripcion.value.trim()) params.set('descripcion', estadosDescripcion.value.trim())
   if (estadosListType.value) params.set('listType', estadosListType.value)
   if (estadosFilter.value !== 'ALL') params.set('estado', estadosFilter.value)
-  if (estadosSortBy.value) {
-    params.set('sortBy', estadosSortBy.value)
-    params.set('sortDir', estadosSortDir.value)
-  }
-}
-
-function toggleEstadosSort(key: EstadosSortKey) {
-  if (estadosSortBy.value === key) {
-    estadosSortDir.value = estadosSortDir.value === 'desc' ? 'asc' : 'desc'
-  } else {
-    estadosSortBy.value = key
-    estadosSortDir.value = 'desc'
-  }
-  loadEstados(true)
-}
-
-function estadosSortIndicator(key: EstadosSortKey) {
-  if (estadosSortBy.value !== key) return ''
-  return estadosSortDir.value === 'desc' ? ' ↓' : ' ↑'
+  estadosSort.appendToParams(params)
 }
 
 const estadosTotalPages = computed(() =>
@@ -1065,8 +1067,7 @@ function clearEstadosFilters() {
   estadosDescripcion.value = ''
   estadosListType.value = ''
   estadosFilter.value = 'ALL'
-  estadosSortBy.value = null
-  estadosSortDir.value = 'desc'
+  estadosSort.reset()
   loadEstados(true)
 }
 
@@ -1138,6 +1139,7 @@ function buildInvimaSearchParams(pageNum: number, limit: number) {
   if (q.value.trim()) params.set('q', q.value.trim())
   if (cum.value.trim()) params.set('cum', cum.value.trim())
   if (listType.value) params.set('listType', listType.value)
+  invimaSort.appendToParams(params)
   params.set('page', String(pageNum))
   params.set('limit', String(limit))
   return params
@@ -1207,6 +1209,7 @@ async function exportKrystalosExcel() {
       fetchPage: async (pageNum, limit) => {
         const params = new URLSearchParams()
         if (krystalosQ.value.trim()) params.set('q', krystalosQ.value.trim())
+        krystalosSort.appendToParams(params)
         params.set('page', String(pageNum))
         params.set('limit', String(limit))
         const { data } = await fetchApi<KrystalosSearchResult>(
@@ -1249,6 +1252,7 @@ async function exportPosExcel() {
       fetchPage: async (pageNum, limit) => {
         const params = new URLSearchParams()
         if (posQ.value.trim()) params.set('q', posQ.value.trim())
+        posSort.appendToParams(params)
         params.set('page', String(pageNum))
         params.set('limit', String(limit))
         const { data } = await fetchApi<PosSearchResult>(
@@ -1291,6 +1295,7 @@ async function exportPmvExcel() {
         const params = new URLSearchParams()
         if (pmvQ.value.trim()) params.set('q', pmvQ.value.trim())
         if (pmvCum.value.trim()) params.set('cum', pmvCum.value.trim())
+        pmvSort.appendToParams(params)
         params.set('page', String(pageNum))
         params.set('limit', String(limit))
         const { data } = await fetchApi<PmvSearchResult>(
@@ -1393,7 +1398,7 @@ async function exportSyncExcel() {
       `sincronizacion-catalogo-${exportStamp()}.xlsx`,
       'Sincronización',
       columns,
-      syncCatalog.value,
+      syncCatalogDisplay.value,
     )
   } finally {
     exportingTab.value = null
@@ -1563,10 +1568,16 @@ async function exportSyncExcel() {
               <th
                 v-for="col in tableColumns"
                 :key="col.key"
-                class="px-4 py-3.5 whitespace-nowrap font-semibold"
+                :class="[
+                  'px-4 py-3.5 whitespace-nowrap font-semibold',
+                  invimaSort.sortableThClass,
+                  invimaSort.sortBy === col.key ? 'text-white' : '',
+                ]"
                 :style="col.minWidth ? { minWidth: col.minWidth } : undefined"
+                :title="`Ordenar por ${col.label}`"
+                @click="invimaSort.toggleSort(col.key, () => search(true))"
               >
-                {{ col.label }}
+                {{ col.label }}{{ invimaSort.sortIndicator(col.key) }}
               </th>
             </tr>
           </thead>
@@ -1695,11 +1706,19 @@ async function exportSyncExcel() {
         <table class="w-full text-sm border-collapse min-w-[640px]">
           <thead class="bg-slate-800 text-left text-[11px] text-slate-200 uppercase tracking-wider sticky top-0 z-10">
             <tr>
-              <th class="px-4 py-3.5 font-semibold">Listado</th>
-              <th class="px-4 py-3.5 font-semibold w-28">Dataset</th>
-              <th class="px-4 py-3.5 font-semibold w-28 text-right">Registros</th>
-              <th class="px-4 py-3.5 font-semibold w-40">Última carga</th>
-              <th class="px-4 py-3.5 font-semibold w-40">Actualización portal</th>
+              <th
+                v-for="col in syncTableColumns"
+                :key="col.key"
+                :class="[
+                  col.thClass,
+                  syncSort.sortableThClass,
+                  syncSort.sortBy === col.key ? 'text-white' : '',
+                ]"
+                :title="`Ordenar por ${col.label}`"
+                @click="syncSort.toggleSort(col.key)"
+              >
+                {{ col.label }}{{ syncSort.sortIndicator(col.key) }}
+              </th>
               <th class="px-4 py-3.5 font-semibold min-w-[12rem]">Estado</th>
               <th class="px-4 py-3.5 font-semibold w-32 text-right">Acción</th>
             </tr>
@@ -1711,7 +1730,7 @@ async function exportSyncExcel() {
               </td>
             </tr>
             <tr
-              v-for="item in syncCatalog"
+              v-for="item in syncCatalogDisplay"
               :key="item.key"
               class="hover:bg-indigo-50/30 transition-colors"
               :class="item.key === 'POS' || item.key === 'KRYSTALOS' ? 'border-t border-slate-200' : ''"
@@ -2131,13 +2150,13 @@ async function exportSyncExcel() {
                   :key="col.key"
                   :class="[
                     col.thClass,
-                    'cursor-pointer select-none hover:bg-slate-700/80 transition-colors',
-                    estadosSortBy === col.key ? 'text-white' : '',
+                    estadosSort.sortableThClass,
+                    estadosSort.sortBy === col.key ? 'text-white' : '',
                   ]"
                   :title="`Ordenar por ${col.label}`"
-                  @click="toggleEstadosSort(col.key)"
+                  @click="estadosSort.toggleSort(col.key, () => loadEstados(true))"
                 >
-                  {{ col.label }}{{ estadosSortIndicator(col.key) }}
+                  {{ col.label }}{{ estadosSort.sortIndicator(col.key) }}
                 </th>
               </tr>
             </thead>
@@ -2322,9 +2341,15 @@ async function exportSyncExcel() {
                 <th
                   v-for="col in krystalosResult?.columns ?? KRYSTALOS_DEFAULT_COLUMNS"
                   :key="col"
-                  class="px-4 py-3.5 whitespace-nowrap font-semibold"
+                  :class="[
+                    'px-4 py-3.5 whitespace-nowrap font-semibold',
+                    krystalosSort.sortableThClass,
+                    krystalosSort.sortBy === col ? 'text-white' : '',
+                  ]"
+                  :title="`Ordenar por ${krystalosColLabel(col)}`"
+                  @click="krystalosSort.toggleSort(col, () => loadKrystalos(true))"
                 >
-                  {{ krystalosColLabel(col) }}
+                  {{ krystalosColLabel(col) }}{{ krystalosSort.sortIndicator(col) }}
                 </th>
               </tr>
             </thead>
@@ -2461,9 +2486,15 @@ async function exportSyncExcel() {
                 <th
                   v-for="col in posResult?.columns ?? ['producto', 'principioactivo', 'expediente', 'estadoregistro']"
                   :key="col"
-                  class="px-4 py-3.5 whitespace-nowrap font-semibold"
+                  :class="[
+                    'px-4 py-3.5 whitespace-nowrap font-semibold',
+                    posSort.sortableThClass,
+                    posSort.sortBy === col ? 'text-white' : '',
+                  ]"
+                  :title="`Ordenar por ${medicamentosPosColLabel(col)}`"
+                  @click="posSort.toggleSort(col, () => loadPos(true))"
                 >
-                  {{ medicamentosPosColLabel(col) }}
+                  {{ medicamentosPosColLabel(col) }}{{ posSort.sortIndicator(col) }}
                 </th>
               </tr>
             </thead>
@@ -2634,9 +2665,15 @@ async function exportSyncExcel() {
                 <th
                   v-for="col in pmvResult?.columns ?? ['cum', 'medicamento', 'precioMaxComercialFinal', 'fechaInicioVigencia']"
                   :key="col"
-                  class="px-4 py-3.5 whitespace-nowrap font-semibold"
+                  :class="[
+                    'px-4 py-3.5 whitespace-nowrap font-semibold',
+                    pmvSort.sortableThClass,
+                    pmvSort.sortBy === col ? 'text-white' : '',
+                  ]"
+                  :title="`Ordenar por ${invimaPmvColLabel(col)}`"
+                  @click="pmvSort.toggleSort(col, () => loadPmv(true))"
                 >
-                  {{ invimaPmvColLabel(col) }}
+                  {{ invimaPmvColLabel(col) }}{{ pmvSort.sortIndicator(col) }}
                 </th>
               </tr>
             </thead>

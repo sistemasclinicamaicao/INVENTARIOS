@@ -10,8 +10,46 @@ import {
   parseInvimaWorkbook,
   ParsedInvimaRow,
 } from './invima-parser';
+import {
+  parseSortDirection,
+  resolveSqlOrderClause,
+} from '../../common/table-sort.util';
 
 const BATCH_INSERT = 400;
+
+const INVIMA_SORT_SQL: Record<string, string> = {
+  listType: 'r.list_type',
+  expediente: 'r.expediente',
+  producto: 'r.producto',
+  titular: 'r.titular',
+  registroSanitario: 'r.registro_sanitario',
+  fechaExpedicion: 'r.fecha_expedicion',
+  fechaVencimiento: 'r.fecha_vencimiento',
+  estadoRegistro: 'r.estado_registro',
+  expedienteCum: 'r.expediente_cum',
+  consecutivoCum: 'r.consecutivo_cum',
+  cantidadCum: 'r.cantidad_cum',
+  cumCodigo: 'r.cum_codigo',
+  descripcionComercial: 'r.descripcion_comercial',
+  estadoCum: 'r.estado_cum',
+  fechaActivo: 'r.fecha_activo',
+  fechaInactivo: 'r.fecha_inactivo',
+  muestraMedica: 'r.muestra_medica',
+  unidad: 'r.unidad',
+  principioActivo: 'r.principio_activo',
+  concentracion: 'r.concentracion',
+  unidadMedida: 'r.unidad_medida',
+  cantidad: 'r.cantidad',
+  unidadReferencia: 'r.unidad_referencia',
+  formaFarmaceutica: 'r.forma_farmaceutica',
+  viaAdministracion: 'r.via_administracion',
+  atc: 'r.atc',
+  descripcionAtc: 'r.descripcion_atc',
+  nombreRol: 'r.nombre_rol',
+  tipoRol: 'r.tipo_rol',
+  modalidad: 'r.modalidad',
+  ium: 'r.ium',
+};
 
 @Injectable()
 export class InvimaService {
@@ -44,6 +82,8 @@ export class InvimaService {
     cum?: string;
     page?: number;
     limit?: number;
+    sortBy?: string;
+    sortDir?: 'asc' | 'desc';
   }) {
     const page = Math.max(1, params.page ?? 1);
     const limit = Math.min(100, Math.max(1, params.limit ?? 25));
@@ -72,9 +112,15 @@ export class InvimaService {
 
     const where = conditions.join(' AND ');
 
-    const orderBy = params.listType
+    const defaultOrder = params.listType
       ? 'r.producto NULLS LAST, r.cum_codigo'
       : 'r.list_type, r.producto NULLS LAST, r.cum_codigo';
+    const orderBy = resolveSqlOrderClause(
+      params.sortBy,
+      parseSortDirection(params.sortDir),
+      INVIMA_SORT_SQL,
+      defaultOrder,
+    );
 
     const [countRow] = await this.dataSource.query(
       `SELECT COUNT(*)::int AS total FROM invima_registros r WHERE ${where}`,

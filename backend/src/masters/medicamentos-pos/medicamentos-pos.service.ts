@@ -8,8 +8,32 @@ import {
   posRegistroToApiRow,
   type ParsedPosRow,
 } from './medicamentos-pos.mapper';
+import {
+  parseSortDirection,
+  resolveSqlOrderClause,
+} from '../../common/table-sort.util';
 
 const BATCH_INSERT = 400;
+
+const POS_SORT_SQL: Record<string, string> = {
+  atc: 'r.atc',
+  principioactivo: 'r.principio_activo',
+  descripcionatc: 'r.descripcion_atc',
+  producto: 'r.producto',
+  expediente: 'r.expediente',
+  registrosanitario: 'r.registro_sanitario',
+  fechavencimiento: 'r.fecha_vencimiento',
+  estadoregistro: 'r.estado_registro',
+  descripcioncomercial: 'r.descripcion_comercial',
+  unidad: 'r.unidad',
+  viaadministracion: 'r.via_administracion',
+  concentracion: 'r.concentracion',
+  unidadmedida: 'r.unidad_medida',
+  cantidad: 'r.cantidad',
+  unidadreferencia: 'r.unidad_referencia',
+  formafarmaceutica: 'r.forma_farmaceutica',
+  nombrerol: 'r.nombre_rol',
+};
 
 @Injectable()
 export class MedicamentosPosService {
@@ -43,7 +67,13 @@ export class MedicamentosPosService {
     return new Set(rows.map((r) => r.atc).filter(Boolean));
   }
 
-  async search(params: { q?: string; page?: number; limit?: number }) {
+  async search(params: {
+    q?: string;
+    page?: number;
+    limit?: number;
+    sortBy?: string;
+    sortDir?: 'asc' | 'desc';
+  }) {
     const page = Math.max(1, params.page ?? 1);
     const limit = Math.min(100, Math.max(1, params.limit ?? 25));
     const offset = (page - 1) * limit;
@@ -64,6 +94,13 @@ export class MedicamentosPosService {
     }
 
     const where = conditions.join(' AND ');
+
+    const orderBy = resolveSqlOrderClause(
+      params.sortBy,
+      parseSortDirection(params.sortDir),
+      POS_SORT_SQL,
+      'r.producto NULLS LAST, r.expediente NULLS LAST, r.id',
+    );
 
     const [countRow] = await this.dataSource.query(
       `SELECT COUNT(*)::int AS total FROM medicamentos_pos_registros r WHERE ${where}`,
@@ -91,7 +128,7 @@ export class MedicamentosPosService {
               r.nombre_rol AS "nombreRol"
        FROM medicamentos_pos_registros r
        WHERE ${where}
-       ORDER BY r.producto NULLS LAST, r.expediente NULLS LAST, r.id
+       ORDER BY ${orderBy}
        LIMIT $${n++} OFFSET $${n++}`,
       [...args, limit, offset],
     );

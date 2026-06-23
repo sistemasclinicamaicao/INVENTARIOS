@@ -62,6 +62,12 @@ import {
   SocrataQueryClient,
   type SocrataViewMetadata,
 } from './socrata-query.client';
+import {
+  parseSortDirection,
+  sortRecordsByKey,
+} from '../common/table-sort.util';
+
+const KRYSTALOS_PMV_SORT_KEYS = new Set(['pmvPrecioUnitario', 'pmvRegulado']);
 
 type DbRow = {
   id: string;
@@ -1225,6 +1231,8 @@ export class ExternalIntegrationsService {
     page = 1,
     limit = 50,
     refresh = false,
+    sortBy?: string,
+    sortDir?: SortDirection,
   ) {
     const fetched = await this.fetchKrystalosMedicamentosRows(refresh);
     let rows = fetched.rows;
@@ -1239,37 +1247,31 @@ export class ExternalIntegrationsService {
       );
     }
 
+    const direction = parseSortDirection(sortDir);
+    const pmvSortActive = Boolean(
+      sortBy && direction && KRYSTALOS_PMV_SORT_KEYS.has(sortBy),
+    );
+
+    if (sortBy && direction) {
+      if (pmvSortActive) {
+        rows = await this.enrichKrystalosRowsWithPmv(rows);
+      }
+      rows = sortRecordsByKey(
+        rows as Record<string, unknown>[],
+        sortBy,
+        direction,
+      );
+    }
+
     const safeLimit = Math.min(Math.max(limit, 1), 200);
     const safePage = Math.max(page, 1);
     const total = rows.length;
     const offset = (safePage - 1) * safeLimit;
     const pageItems = rows.slice(offset, offset + safeLimit);
 
-    const cumKeys = [
-      ...new Set(
-        pageItems
-          .map((r) =>
-            normalizeCumKey(r.codcum ?? r.CODCUM ?? r.cum ?? ''),
-          )
-          .filter(Boolean),
-      ),
-    ];
-
-    const [pmvByCum, invimaByCum] = await Promise.all([
-      this.invimaPmv.loadPmvByCumKeys(cumKeys),
-      this.loadInvimaRowsByCum(cumKeys),
-    ]);
-
-    const enrichedItems = pageItems.map((row) => {
-      const codcum = normalizeCumKey(row.codcum ?? row.CODCUM ?? row.cum ?? '');
-      const invimaMatches = codcum ? invimaByCum.get(codcum) ?? [] : [];
-      const pmvFields = this.computePmvEnrichment(codcum, invimaMatches, pmvByCum);
-
-      return {
-        ...row,
-        ...pmvFields,
-      };
-    });
+    const enrichedItems = pmvSortActive
+      ? pageItems
+      : await this.enrichKrystalosRowsWithPmv(pageItems);
 
     let columns = extractColumnNames(rows.length ? rows : fetched.rows);
     columns = this.insertKrystalosPmvColumns(columns);
@@ -1288,6 +1290,40 @@ export class ExternalIntegrationsService {
       message:
         fetched.httpStatus >= 400 ? `Error HTTP ${fetched.httpStatus}` : undefined,
     };
+  }
+
+  private async enrichKrystalosRowsWithPmv(
+    rows: Record<string, unknown>[],
+  ): Promise<Record<string, unknown>[]> {
+    if (!rows.length) return [];
+
+    const cumKeys = [
+      ...new Set(
+        rows
+          .map((r) =>
+            normalizeCumKey(String(r.codcum ?? r.CODCUM ?? r.cum ?? '')),
+          )
+          .filter(Boolean),
+      ),
+    ];
+
+    const [pmvByCum, invimaByCum] = await Promise.all([
+      this.invimaPmv.loadPmvByCumKeys(cumKeys),
+      this.loadInvimaRowsByCum(cumKeys),
+    ]);
+
+    return rows.map((row) => {
+      const codcum = normalizeCumKey(
+        String(row.codcum ?? row.CODCUM ?? row.cum ?? ''),
+      );
+      const invimaMatches = codcum ? invimaByCum.get(codcum) ?? [] : [];
+      const pmvFields = this.computePmvEnrichment(
+        codcum,
+        invimaMatches,
+        pmvByCum,
+      );
+      return { ...row, ...pmvFields };
+    });
   }
 
   private insertKrystalosPmvColumns(columns: string[]): string[] {

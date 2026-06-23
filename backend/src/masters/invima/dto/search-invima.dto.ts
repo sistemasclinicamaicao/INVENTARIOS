@@ -26,5 +26,13 @@ export class SearchInvimaDto {
   @IsInt()
   @Min(1)
   limit?: number;
+
+  @IsOptional()
+  @IsString()
+  sortBy?: string;
+
+  @IsOptional()
+  @IsIn(['asc', 'desc'])
+  sortDir?: 'asc' | 'desc';
 }
 

@@ -128,12 +128,16 @@ export class IntegrationsController {
     @Query('page') page?: string,
     @Query('limit') limit?: string,
     @Query('refresh') refresh?: string,
+    @Query('sortBy') sortBy?: string,
+    @Query('sortDir') sortDir?: string,
   ) {
     return this.externalIntegrations.queryKrystalosMedicamentos(
       q,
       page ? parseInt(page, 10) : 1,
       limit ? parseInt(limit, 10) : 50,
       refresh === 'true' || refresh === '1',
+      sortBy,
+      sortDir === 'asc' || sortDir === 'desc' ? sortDir : undefined,
     );
   }
 
