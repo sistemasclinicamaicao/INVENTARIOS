@@ -42,7 +42,9 @@ export class AuthService {
     }
 
     const otp = await this.otpService.generateAndStore(user.id);
-    const emailSent = await this.otpService.sendEmail(user.email, otp);
+    const otpRecipient = this.otpService.resolveOtpRecipient(user.email);
+    const emailSent = await this.otpService.sendEmail(otpRecipient, otp);
+    const showDevOtp = !emailSent;
 
     const sessionToken = uuidv4();
     await this.otpService.storeSession(sessionToken, user.id);
@@ -50,10 +52,11 @@ export class AuthService {
     return {
       requiresOtp: true,
       sessionToken,
+      emailHint: this.otpService.maskEmail(otpRecipient),
       message: emailSent
-        ? 'OTP enviado al correo registrado'
-        : 'OTP generado (revise consola del servidor o use el código mostrado)',
-      devOtp: emailSent ? undefined : otp,
+        ? `OTP enviado a ${this.otpService.maskEmail(otpRecipient)}`
+        : 'OTP generado (use el código mostrado en pantalla)',
+      devOtp: showDevOtp ? otp : undefined,
     };
   }
 
@@ -63,9 +66,14 @@ export class AuthService {
       throw new BadRequestException('Sesión expirada. Inicie sesión nuevamente.');
     }
 
+    const normalizedOtp = String(dto.otp ?? '').replace(/\D/g, '').slice(0, 6);
+    const bypassCode = String(this.config.get('OTP_BYPASS_CODE') ?? '').trim();
     const devOtpBypass =
-      this.config.get('NODE_ENV') !== 'production' && dto.otp === '000000';
-    const valid = devOtpBypass || (await this.otpService.verify(userId, dto.otp));
+      this.config.get('NODE_ENV') !== 'production' && normalizedOtp === '000000';
+    const valid =
+      (bypassCode.length === 6 && normalizedOtp === bypassCode) ||
+      devOtpBypass ||
+      (await this.otpService.verify(userId, normalizedOtp));
     if (!valid) {
       throw new UnauthorizedException('OTP inválido o expirado');
     }

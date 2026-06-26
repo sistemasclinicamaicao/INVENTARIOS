@@ -8,6 +8,8 @@ const step = ref<'login' | 'otp'>('login')
 const sessionToken = ref('')
 const error = ref('')
 const devOtp = ref('')
+const emailHint = ref('')
+const loginMessage = ref('')
 const apiBase = useApiBase()
 const session = useSessionStore()
 
@@ -17,6 +19,8 @@ async function submitLogin() {
     const res = await $fetch<{
       requiresOtp: boolean
       sessionToken: string
+      emailHint?: string
+      message?: string
       devOtp?: string
     }>(`${apiBase}/auth/login`, {
       method: 'POST',
@@ -24,9 +28,12 @@ async function submitLogin() {
     })
     sessionToken.value = res.sessionToken
     devOtp.value = res.devOtp ?? ''
+    emailHint.value = res.emailHint ?? ''
+    loginMessage.value = res.message ?? ''
     step.value = 'otp'
-  } catch {
-    error.value = 'Error de autenticación'
+  } catch (e: unknown) {
+    const msg = (e as { data?: { message?: string } })?.data?.message
+    error.value = msg || 'Error de autenticación'
   }
 }
 
@@ -43,7 +50,7 @@ async function submitOtp() {
       }
     }>(`${apiBase}/auth/verify-otp`, {
       method: 'POST',
-      body: { sessionToken: sessionToken.value, otp: otp.value },
+      body: { sessionToken: sessionToken.value, otp: otp.value.replace(/\D/g, '').slice(0, 6) },
     })
     if (import.meta.client) {
       localStorage.setItem('accessToken', res.accessToken)
@@ -59,8 +66,9 @@ async function submitOtp() {
     const { loadProfile } = useAuth()
     await loadProfile()
     await navigateTo('/')
-  } catch {
-    error.value = 'OTP inválido'
+  } catch (e: unknown) {
+    const msg = (e as { data?: { message?: string } })?.data?.message
+    error.value = msg || 'OTP inválido o expirado. Vuelva a iniciar sesión.'
   }
 }
 </script>
@@ -81,11 +89,11 @@ async function submitOtp() {
       <form v-if="step === 'login'" class="space-y-4" @submit.prevent="submitLogin">
         <div>
           <label class="block text-xs font-medium text-slate-500 mb-1">Cédula</label>
-          <input v-model="cedula" type="text" class="w-full p-2 border rounded-lg" required />
+          <input v-model="cedula" type="text" autocomplete="username" class="w-full p-2 border rounded-lg" required />
         </div>
         <div>
           <label class="block text-xs font-medium text-slate-500 mb-1">Contraseña</label>
-          <input v-model="password" type="password" class="w-full p-2 border rounded-lg" required />
+          <input v-model="password" type="password" autocomplete="current-password" class="w-full p-2 border rounded-lg" required />
         </div>
         <p v-if="error" class="text-sm text-red-600">{{ error }}</p>
         <button type="submit" class="w-full bg-blue-600 text-white py-2 rounded-lg hover:bg-blue-700">
@@ -95,14 +103,18 @@ async function submitOtp() {
       </form>
 
       <form v-else class="space-y-4" @submit.prevent="submitOtp">
-        <p class="text-sm text-slate-600">Ingrese el código enviado a su correo.</p>
+        <p class="text-sm text-slate-600">
+          {{ loginMessage || (emailHint ? `Ingrese el código enviado a ${emailHint}.` : 'Ingrese el código enviado a su correo.') }}
+        </p>
         <p v-if="devOtp" class="text-xs text-amber-700 bg-amber-50 border border-amber-200 p-3 rounded">
-          No se pudo enviar el correo. Use este código OTP:
+          Use este código OTP:
           <strong class="block text-center text-lg tracking-widest mt-1">{{ devOtp }}</strong>
         </p>
         <input
           v-model="otp"
           type="text"
+          inputmode="numeric"
+          autocomplete="one-time-code"
           maxlength="6"
           placeholder="000000"
           class="w-full p-2 border rounded-lg text-center text-lg tracking-widest"
