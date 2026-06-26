@@ -91,6 +91,9 @@ services:
       SMTP_PASS: ${SMTP_PASS:-}
       SMTP_FROM: ${SMTP_FROM:-noreply@clinica.local}
       INVIMA_VENCIDOS_ALERT_TO: ${INVIMA_VENCIDOS_ALERT_TO:-}
+      INVIMA_SYNC_CRON: ${INVIMA_SYNC_CRON:-0 6 * * *}
+      INVIMA_SYNC_CRON_TZ: ${INVIMA_SYNC_CRON_TZ:-America/Bogota}
+      INVIMA_SYNC_CRON_ENABLED: ${INVIMA_SYNC_CRON_ENABLED:-true}
       INTEGRATION_SECRET_KEY: ${INTEGRATION_SECRET_KEY:-}
       HR_API_URL: ${HR_API_URL:-http://host.docker.internal:3999/mock/hr}
       HR_API_KEY: ${HR_API_KEY:-dev-key}
