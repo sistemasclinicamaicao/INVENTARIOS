@@ -11,6 +11,9 @@
     "import:invima": "node dist/scripts/import-invima-cli.js",
     "import:invima-pmv": "node dist/scripts/import-invima-pmv-cli.js",
     "reload:invima-socrata": "node dist/scripts/reload-invima-socrata-cli.js",
+    "send:invima-vencidos-test": "node dist/scripts/send-invima-vencidos-test-cli.js",
+    "send:invima-estados-alerts-test": "node dist/scripts/send-invima-estados-alerts-test-cli.js",
+    "send:invima-estados-real": "node dist/scripts/send-invima-estados-real-cli.js",
     "lint": "eslint \"{src,apps,libs,test}/**/*.ts\" --fix"
   },
   "dependencies": {

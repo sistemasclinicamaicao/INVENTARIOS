@@ -39,6 +39,9 @@ import {
   type EstadoFilter,
   type InvimaCumMatchRow,
   matchesEstadoFilter,
+  isEstadosVencidosChipRow,
+  isEstadosSinRegistroInvimaChipRow,
+  isEstadosSinCumChipRow,
   isValidEstadoSortKey,
   sortKrystalosInvimaEstadoRows,
   type SortDirection,
@@ -993,6 +996,124 @@ export class ExternalIntegrationsService {
     return this.syncAllInvimaSocrata(replaceExisting);
   }
 
+  /**
+   * Sincroniza los 6 catálogos en el mismo orden que el botón «Sincronizar todos» del UI.
+   * Se detiene en el primer fallo.
+   */
+  async syncAllCatalogsSequential(replaceExisting = true) {
+    type StepResult = {
+      step: string;
+      label: string;
+      ok: boolean;
+      message?: string;
+      rowsImported?: number;
+      durationMs?: number;
+    };
+
+    const startAll = Date.now();
+    const results: StepResult[] = [];
+    const totalSteps = INVIMA_LIST_TYPE_ORDER.length + 2;
+
+    const fail = (failedStep: string) => {
+      const okCount = results.filter((r) => r.ok).length;
+      return {
+        ok: false,
+        stepsCompleted: okCount,
+        totalSteps,
+        durationMs: Date.now() - startAll,
+        failedStep,
+        results,
+        message: `Sincronización detenida en «${failedStep}». ${okCount}/${totalSteps} pasos completados.`,
+      };
+    };
+
+    for (const listType of INVIMA_LIST_TYPE_ORDER) {
+      const label = INVIMA_LIST_TYPE_TITLES[listType] ?? listType;
+      const stepStart = Date.now();
+      try {
+        const r = await this.syncInvimaSocrataByListType(listType, replaceExisting);
+        results.push({
+          step: listType,
+          label,
+          ok: r.ok !== false,
+          message: r.message,
+          rowsImported: r.rowsImported,
+          durationMs: Date.now() - stepStart,
+        });
+        if (r.ok === false) {
+          return fail(label);
+        }
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        results.push({
+          step: listType,
+          label,
+          ok: false,
+          message,
+          durationMs: Date.now() - stepStart,
+        });
+        return fail(label);
+      }
+    }
+
+    const posStart = Date.now();
+    try {
+      const r = await this.syncMedicamentosPos(replaceExisting);
+      results.push({
+        step: 'MEDICAMENTOS_POS',
+        label: 'Medicamentos POS',
+        ok: true,
+        message: r.message,
+        rowsImported: r.rowsImported,
+        durationMs: Date.now() - posStart,
+      });
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      results.push({
+        step: 'MEDICAMENTOS_POS',
+        label: 'Medicamentos POS',
+        ok: false,
+        message,
+        durationMs: Date.now() - posStart,
+      });
+      return fail('Medicamentos POS');
+    }
+
+    const krystalosStart = Date.now();
+    try {
+      const r = await this.syncKrystalosMedicamentos();
+      results.push({
+        step: 'KRYSTALOS_MEDICAMENTOS',
+        label: 'Medicamentos Krystalos',
+        ok: true,
+        message: r.message,
+        rowsImported: r.rowsImported,
+        durationMs: Date.now() - krystalosStart,
+      });
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      results.push({
+        step: 'KRYSTALOS_MEDICAMENTOS',
+        label: 'Medicamentos Krystalos',
+        ok: false,
+        message,
+        durationMs: Date.now() - krystalosStart,
+      });
+      return fail('Medicamentos Krystalos');
+    }
+
+    const totalImported = results.reduce((s, r) => s + (r.rowsImported ?? 0), 0);
+    return {
+      ok: true,
+      stepsCompleted: totalSteps,
+      totalSteps,
+      durationMs: Date.now() - startAll,
+      failedStep: null as string | null,
+      results,
+      message: `Los ${totalSteps} catálogos se sincronizaron correctamente (${totalImported.toLocaleString()} filas en total).`,
+    };
+  }
+
   async pollPurchaseOrder(id: string, number: string) {
     const row = await this.findRow(id);
     if (row.integrationKind !== 'ERP_PURCHASE_ORDER') {
@@ -1508,6 +1629,95 @@ export class ExternalIntegrationsService {
     };
   }
 
+  /** Cruce CUM Krystalos ↔ INVIMA CUM con estado regulatorio (dataset completo). */
+  async buildKrystalosInvimaEstadosDataset(refresh = false) {
+    const fetched = await this.fetchKrystalosMedicamentosRows(refresh);
+    const medicamentos = fetched.rows
+      .map((r) => parseKrystalosMedicamento(r))
+      .filter((m): m is NonNullable<typeof m> => m != null);
+
+    const cumCodes = [
+      ...new Set(medicamentos.map((m) => m.codcum).filter(Boolean)),
+    ];
+
+    const [invimaByCum, pmvByCum] = await Promise.all([
+      this.loadInvimaRowsByCum(cumCodes),
+      this.invimaPmv.loadPmvByCumKeys(cumCodes),
+    ]);
+
+    let posAtcSet = new Set<string>();
+    try {
+      posAtcSet = await this.medicamentosPos.loadAtcSet();
+    } catch (e) {
+      this.logger.warn(
+        `Índice ATC POS no disponible: ${(e as Error).message}`,
+      );
+    }
+
+    const allRows = medicamentos.map((med) => {
+      const matches = med.codcum ? invimaByCum.get(med.codcum) ?? [] : [];
+      const best = pickBestInvimaMatch(matches);
+      const resumen = resolveEstadoResumen(med, matches);
+      const pos = resolvePosLabel(best?.atc ?? null, posAtcSet);
+      const pmvFields = med.codcum
+        ? this.computePmvEnrichment(med.codcum, matches, pmvByCum)
+        : { pmvPrecioUnitario: null, pmvRegulado: false };
+      return {
+        idArticulo: med.idArticulo,
+        descripcion: med.descripcion,
+        codcum: med.codcum || null,
+        pmvPrecioUnitario: pmvFields.pmvPrecioUnitario,
+        pmvRegulado: pmvFields.pmvRegulado,
+        invimaMatched: matches.length > 0,
+        invimaListType: best?.listType ?? null,
+        invimaEstadoRegistro: best?.estadoRegistro ?? null,
+        invimaFechaVencimiento: best?.fechaVencimiento ?? null,
+        invimaProducto: best?.producto ?? null,
+        invimaRegistroSanitario: best?.registroSanitario ?? null,
+        invimaAtc: best?.atc ?? null,
+        invimaMatchCount: matches.length,
+        estadoKey: resumen.key,
+        estadoLabel: resumen.label,
+        posMatched: pos.posMatched,
+        posLabel: pos.posLabel,
+      };
+    });
+
+    const summary = {
+      total: allRows.length,
+      matched: allRows.filter((r) => r.invimaMatched).length,
+      notMatched: allRows.filter((r) => r.codcum && !r.invimaMatched).length,
+      sinCum: allRows.filter((r) => isEstadosSinCumChipRow(r.estadoKey)).length,
+      vigente: allRows.filter((r) => r.estadoKey === 'VIGENTE').length,
+      vencido: allRows.filter((r) => isEstadosVencidosChipRow(r.estadoKey)).length,
+      renovacion: allRows.filter((r) => r.estadoKey === 'RENOVACION').length,
+      otro: allRows.filter((r) => r.estadoKey === 'OTRO').length,
+      sinRegistro: allRows.filter((r) => isEstadosSinRegistroInvimaChipRow(r.estadoKey)).length,
+      regulados: allRows.filter((r) => r.pmvRegulado).length,
+      posMedicamento: allRows.filter((r) => r.posMatched).length,
+      noPos: allRows.filter((r) => !r.posMatched).length,
+    };
+
+    const vencidoRows = allRows.filter((r) => isEstadosVencidosChipRow(r.estadoKey));
+    const sinRegistroRows = allRows.filter((r) =>
+      isEstadosSinRegistroInvimaChipRow(r.estadoKey),
+    );
+    const sinCumRows = allRows.filter((r) => isEstadosSinCumChipRow(r.estadoKey));
+
+    return {
+      ok: fetched.httpStatus >= 200 && fetched.httpStatus < 300,
+      httpStatus: fetched.httpStatus,
+      durationMs: fetched.durationMs,
+      url: fetched.url,
+      integrationName: fetched.integrationName,
+      summary,
+      allRows,
+      vencidoRows,
+      sinRegistroRows,
+      sinCumRows,
+    };
+  }
+
   /** Cruce CUM Krystalos ↔ INVIMA CUM con estado regulatorio. */
   async queryKrystalosInvimaEstados(
     q?: string,
@@ -1527,73 +1737,9 @@ export class ExternalIntegrationsService {
       const safeLimit =
         Number.isFinite(limit) && limit > 0 ? Math.min(Math.floor(limit), 200) : 50;
 
-      const fetched = await this.fetchKrystalosMedicamentosRows(refresh);
-      const medicamentos = fetched.rows
-        .map((r) => parseKrystalosMedicamento(r))
-        .filter((m): m is NonNullable<typeof m> => m != null);
-
-      const cumCodes = [
-        ...new Set(medicamentos.map((m) => m.codcum).filter(Boolean)),
-      ];
-
-      const [invimaByCum, pmvByCum] = await Promise.all([
-        this.loadInvimaRowsByCum(cumCodes),
-        this.invimaPmv.loadPmvByCumKeys(cumCodes),
-      ]);
-
-      let posAtcSet = new Set<string>();
-      try {
-        posAtcSet = await this.medicamentosPos.loadAtcSet();
-      } catch (e) {
-        this.logger.warn(
-          `Índice ATC POS no disponible: ${(e as Error).message}`,
-        );
-      }
-
+      const dataset = await this.buildKrystalosInvimaEstadosDataset(refresh);
+      const { summary, allRows } = dataset;
       const needle = q?.trim().toLowerCase();
-      const allRows = medicamentos.map((med) => {
-        const matches = med.codcum ? invimaByCum.get(med.codcum) ?? [] : [];
-        const best = pickBestInvimaMatch(matches);
-        const resumen = resolveEstadoResumen(med, matches);
-        const pos = resolvePosLabel(best?.atc ?? null, posAtcSet);
-        const pmvFields = med.codcum
-          ? this.computePmvEnrichment(med.codcum, matches, pmvByCum)
-          : { pmvPrecioUnitario: null, pmvRegulado: false };
-        return {
-          idArticulo: med.idArticulo,
-          descripcion: med.descripcion,
-          codcum: med.codcum || null,
-          pmvPrecioUnitario: pmvFields.pmvPrecioUnitario,
-          pmvRegulado: pmvFields.pmvRegulado,
-          invimaMatched: matches.length > 0,
-          invimaListType: best?.listType ?? null,
-          invimaEstadoRegistro: best?.estadoRegistro ?? null,
-          invimaFechaVencimiento: best?.fechaVencimiento ?? null,
-          invimaProducto: best?.producto ?? null,
-          invimaRegistroSanitario: best?.registroSanitario ?? null,
-          invimaAtc: best?.atc ?? null,
-          invimaMatchCount: matches.length,
-          estadoKey: resumen.key,
-          estadoLabel: resumen.label,
-          posMatched: pos.posMatched,
-          posLabel: pos.posLabel,
-        };
-      });
-
-      const summary = {
-        total: allRows.length,
-        matched: allRows.filter((r) => r.invimaMatched).length,
-        notMatched: allRows.filter((r) => r.codcum && !r.invimaMatched).length,
-        sinCum: allRows.filter((r) => !r.codcum).length,
-        vigente: allRows.filter((r) => r.estadoKey === 'VIGENTE').length,
-        vencido: allRows.filter((r) => r.estadoKey === 'VENCIDO').length,
-        renovacion: allRows.filter((r) => r.estadoKey === 'RENOVACION').length,
-        otro: allRows.filter((r) => r.estadoKey === 'OTRO').length,
-        sinRegistro: allRows.filter((r) => r.estadoKey === 'SIN_REGISTRO').length,
-        regulados: allRows.filter((r) => r.pmvRegulado).length,
-        posMedicamento: allRows.filter((r) => r.posMatched).length,
-        noPos: allRows.filter((r) => !r.posMatched).length,
-      };
 
     let merged = allRows;
 
@@ -1660,11 +1806,11 @@ export class ExternalIntegrationsService {
     const items = merged.slice(offset, offset + safeLimit);
 
     return {
-      ok: fetched.httpStatus >= 200 && fetched.httpStatus < 300,
-      httpStatus: fetched.httpStatus,
-      durationMs: fetched.durationMs,
-      url: fetched.url,
-      integrationName: fetched.integrationName,
+      ok: dataset.ok,
+      httpStatus: dataset.httpStatus,
+      durationMs: dataset.durationMs,
+      url: dataset.url,
+      integrationName: dataset.integrationName,
       summary,
       items,
       total,

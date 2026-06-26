@@ -112,6 +112,21 @@ export function matchesEstadoFilter(
   return key === filter;
 }
 
+/** Misma condición que la etiqueta «Vencidos» en la pestaña Estados del UI. */
+export function isEstadosVencidosChipRow(estadoKey: EstadoResumenKey): boolean {
+  return matchesEstadoFilter(estadoKey, 'VENCIDO');
+}
+
+/** Misma condición que la etiqueta «Sin registro INVIMA» (conteo summary.sinRegistro). */
+export function isEstadosSinRegistroInvimaChipRow(estadoKey: EstadoResumenKey): boolean {
+  return estadoKey === 'SIN_REGISTRO';
+}
+
+/** Misma condición que la etiqueta «Sin CUM» en la pestaña Estados del UI. */
+export function isEstadosSinCumChipRow(estadoKey: EstadoResumenKey): boolean {
+  return matchesEstadoFilter(estadoKey, 'SIN_CUM');
+}
+
 export function resolvePosLabel(
   invimaAtc: string | null | undefined,
   posAtcSet: Set<string>,

@@ -1,8 +1,8 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
-import * as nodemailer from 'nodemailer';
 import { redisIoOptions } from '../common/redis-options.util';
+import { MailService } from '../mail/mail.service';
 
 interface MemoryEntry {
   value: string;
@@ -15,9 +15,11 @@ export class OtpService {
   private redis: Redis | null = null;
   private redisOk = true;
   private readonly memory = new Map<string, MemoryEntry>();
-  private mailer: nodemailer.Transporter | null = null;
 
-  constructor(private readonly config: ConfigService) {
+  constructor(
+    private readonly config: ConfigService,
+    private readonly mailService: MailService,
+  ) {
     try {
       this.redis = new Redis(redisIoOptions(config));
       this.redis.on('error', (err) => {
@@ -27,19 +29,6 @@ export class OtpService {
     } catch (err) {
       this.redisOk = false;
       this.logger.warn('Redis OTP no disponible; usando memoria local');
-    }
-
-    const host = this.config.get<string>('SMTP_HOST');
-    if (host) {
-      const smtpPass = String(this.config.get('SMTP_PASS') ?? '').replace(/\s+/g, '');
-      this.mailer = nodemailer.createTransport({
-        host,
-        port: Number(this.config.get('SMTP_PORT') ?? 587),
-        auth: {
-          user: this.config.get('SMTP_USER'),
-          pass: smtpPass,
-        },
-      });
     }
   }
 
@@ -112,25 +101,20 @@ export class OtpService {
   }
 
   async sendEmail(to: string, otp: string): Promise<boolean> {
-    const from = this.config.get('SMTP_FROM') ?? 'noreply@clinica.local';
-    if (!this.mailer) {
+    if (!this.mailService.isConfigured()) {
       console.log(`[DEV OTP] ${to} => ${otp}`);
       return false;
     }
-    try {
-      await this.mailer.sendMail({
-        from,
-        to,
-        subject: 'Código de verificación - Clínica ERP',
-        text: `Su código OTP es: ${otp}. Válido por ${this.ttl() / 60} minutos.`,
-        html: `<p>Su código OTP es: <strong>${otp}</strong></p><p>Válido por ${this.ttl() / 60} minutos.</p>`,
-      });
-      return true;
-    } catch (err) {
-      this.logger.warn(`SMTP falló (${to}): ${(err as Error).message}`);
+    const sent = await this.mailService.sendMail({
+      to,
+      subject: 'Código de verificación - Clínica ERP',
+      text: `Su código OTP es: ${otp}. Válido por ${this.ttl() / 60} minutos.`,
+      html: `<p>Su código OTP es: <strong>${otp}</strong></p><p>Válido por ${this.ttl() / 60} minutos.</p>`,
+    });
+    if (!sent) {
       console.log(`[OTP fallback] ${to} => ${otp}`);
-      return false;
     }
+    return sent;
   }
 
   async storeSession(token: string, userId: string): Promise<void> {

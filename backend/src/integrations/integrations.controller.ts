@@ -20,6 +20,7 @@ import { HisPrescriptionDto } from './dto/his-prescription.dto';
 import { ExternalIntegrationsService } from './external-integrations.service';
 import { HisService } from './his.service';
 import { HrAdapterService } from './hr-adapter.service';
+import { InvimaAlertService } from './invima-alert.service';
 
 @ApiTags('integrations')
 @Controller('integrations')
@@ -29,6 +30,7 @@ export class IntegrationsController {
     private readonly hrAdapter: HrAdapterService,
     private readonly config: ConfigService,
     private readonly externalIntegrations: ExternalIntegrationsService,
+    private readonly invimaAlert: InvimaAlertService,
   ) {}
 
   @Public()
@@ -155,6 +157,36 @@ export class IntegrationsController {
       limit ? parseInt(limit, 10) : 50,
       refresh === 'true' || refresh === '1',
     );
+  }
+
+  @RequirePermissions('admin.users')
+  @Post('external/invima/send-test-alert')
+  sendInvimaTestAlert() {
+    return this.invimaAlert.sendTestVencidosAlert();
+  }
+
+  @RequirePermissions('admin.users')
+  @Post('external/invima/send-test-sin-registro-alert')
+  sendInvimaTestSinRegistroAlert() {
+    return this.invimaAlert.sendTestSinRegistroAlert();
+  }
+
+  @RequirePermissions('admin.users')
+  @Post('external/invima/send-real-estados-alerts')
+  sendRealEstadosAlerts() {
+    return this.invimaAlert.sendRealEstadosAlerts(true);
+  }
+
+  @RequirePermissions('admin.users')
+  @Post('external/invima/send-test-sin-cum-alert')
+  sendInvimaTestSinCumAlert() {
+    return this.invimaAlert.sendTestSinCumAlert();
+  }
+
+  @RequirePermissions('admin.users')
+  @Post('external/invima/run-daily-job')
+  runInvimaDailyJob() {
+    return this.invimaAlert.runDailyInvimaJob();
   }
 
   @RequirePermissions('admin.users')

@@ -10,6 +10,7 @@ import { PermissionsGuard } from './auth/guards/permissions.guard';
 import { DashboardModule } from './dashboard/dashboard.module';
 import { HealthModule } from './health/health.module';
 import { IntegrationsModule } from './integrations/integrations.module';
+import { MailModule } from './mail/mail.module';
 import { InventoryModule } from './inventory/inventory.module';
 import { MastersModule } from './masters/masters.module';
 import { OperationsModule } from './operations/operations.module';
@@ -53,6 +54,7 @@ import { redisIoOptions } from './common/redis-options.util';
         redis: redisIoOptions(config),
       }),
     }),
+    MailModule,
     HealthModule,
     UsersModule,
     AuthModule,

@@ -3,9 +3,11 @@ import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { IntegrationsModule } from './integrations/integrations.module';
+import { MailModule } from './mail/mail.module';
 import { User } from './users/entities/user.entity';
 import { Role } from './users/entities/role.entity';
 import { HrSyncProcessor } from './workers/hr-sync.processor';
+import { InvimaSyncProcessor } from './workers/invima-sync.processor';
 import { redisIoOptions } from './common/redis-options.util';
 
 @Module({
@@ -28,9 +30,10 @@ import { redisIoOptions } from './common/redis-options.util';
         redis: redisIoOptions(config),
       }),
     }),
-    BullModule.registerQueue({ name: 'hr-sync' }),
+    BullModule.registerQueue({ name: 'hr-sync' }, { name: 'invima-sync' }),
+    MailModule,
     IntegrationsModule,
   ],
-  providers: [HrSyncProcessor],
+  providers: [HrSyncProcessor, InvimaSyncProcessor],
 })
 export class WorkerModule {}

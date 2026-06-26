@@ -7,8 +7,8 @@ async function bootstrap() {
   const app = await NestFactory.createApplicationContext(WorkerModule);
   await app.init();
 
-  const queue = app.get<Queue>(getQueueToken('hr-sync'));
-  await queue.add(
+  const hrQueue = app.get<Queue>(getQueueToken('hr-sync'));
+  await hrQueue.add(
     'sync',
     {},
     {
@@ -16,6 +16,17 @@ async function bootstrap() {
       jobId: 'hr-sync-cron',
     },
   );
-  console.log('Worker started — HR sync programado cada 6 horas');
+
+  const invimaQueue = app.get<Queue>(getQueueToken('invima-sync'));
+  await invimaQueue.add(
+    'daily',
+    {},
+    {
+      repeat: { cron: '0 6 * * *', tz: 'America/Bogota' },
+      jobId: 'invima-sync-daily',
+    },
+  );
+
+  console.log('Worker started — HR sync cada 6 h; INVIMA sync diario 6:00 America/Bogota');
 }
 bootstrap();
