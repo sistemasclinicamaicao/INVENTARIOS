@@ -197,42 +197,6 @@ export class IntegrationsController {
   }
 
   @RequirePermissions('admin.users')
-  @Get('external/:id')
-  getExternal(@Param('id') id: string) {
-    return this.externalIntegrations.getById(id);
-  }
-
-  @RequirePermissions('admin.users')
-  @Patch('external/:id')
-  updateExternal(
-    @Param('id') id: string,
-    @Body() dto: UpdateExternalIntegrationDto,
-  ) {
-    return this.externalIntegrations.update(id, dto);
-  }
-
-  @RequirePermissions('admin.users')
-  @Delete('external/:id')
-  removeExternal(@Param('id') id: string) {
-    return this.externalIntegrations.remove(id);
-  }
-
-  @RequirePermissions('admin.users')
-  @Post('external/:id/test-connection')
-  testConnection(@Param('id') id: string) {
-    return this.externalIntegrations.testConnection(id);
-  }
-
-  @RequirePermissions('admin.users')
-  @Get('external/:id/poll/purchase-orders/:number')
-  pollPurchaseOrder(
-    @Param('id') id: string,
-    @Param('number') number: string,
-  ) {
-    return this.externalIntegrations.pollPurchaseOrder(id, number);
-  }
-
-  @RequirePermissions('admin.users')
   @Post('external/socrata/reload-invimaf-all')
   reloadAllInvimaFromSocrata(@Body() dto: SyncSocrataDto) {
     return this.externalIntegrations.reloadAllInvimaFromSocrata(
@@ -323,6 +287,42 @@ export class IntegrationsController {
       listType as 'VIGENTE' | 'VENCIDO' | 'RENOVACION' | 'OTRO_ESTADO',
       dto.replaceExisting !== false,
     );
+  }
+
+  @RequirePermissions('admin.users')
+  @Get('external/:id')
+  getExternal(@Param('id') id: string) {
+    return this.externalIntegrations.getById(id);
+  }
+
+  @RequirePermissions('admin.users')
+  @Patch('external/:id')
+  updateExternal(
+    @Param('id') id: string,
+    @Body() dto: UpdateExternalIntegrationDto,
+  ) {
+    return this.externalIntegrations.update(id, dto);
+  }
+
+  @RequirePermissions('admin.users')
+  @Delete('external/:id')
+  removeExternal(@Param('id') id: string) {
+    return this.externalIntegrations.remove(id);
+  }
+
+  @RequirePermissions('admin.users')
+  @Post('external/:id/test-connection')
+  testConnection(@Param('id') id: string) {
+    return this.externalIntegrations.testConnection(id);
+  }
+
+  @RequirePermissions('admin.users')
+  @Get('external/:id/poll/purchase-orders/:number')
+  pollPurchaseOrder(
+    @Param('id') id: string,
+    @Param('number') number: string,
+  ) {
+    return this.externalIntegrations.pollPurchaseOrder(id, number);
   }
 
   @RequirePermissions('admin.users')
