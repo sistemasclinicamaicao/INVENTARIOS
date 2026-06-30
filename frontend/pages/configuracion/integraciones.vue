@@ -68,6 +68,7 @@ interface SyncScheduleInfo {
 
 const syncSchedule = ref<SyncScheduleInfo | null>(null)
 const syncScheduleLoading = ref(false)
+const syncScheduleError = ref<string | null>(null)
 const editingId = ref<string | null>(null)
 const editingHasSecret = ref(false)
 const invimaPresetKey = ref<InvimaSocrataPresetKey>('VIGENTE')
@@ -331,9 +332,12 @@ async function loadIntegrations() {
 
 async function loadSyncSchedule() {
   syncScheduleLoading.value = true
-  const { data } = await fetchApi<SyncScheduleInfo>('/integrations/external/sync-schedule')
+  const { data, error: err } = await fetchApi<SyncScheduleInfo>(
+    '/integrations/external/sync-schedule',
+  )
   syncScheduleLoading.value = false
   syncSchedule.value = data ?? null
+  syncScheduleError.value = err ?? null
 }
 
 onMounted(async () => {
@@ -761,30 +765,87 @@ async function testHis() {
       </p>
 
       <div
-        class="rounded-xl border border-slate-200 bg-white p-4 shadow-sm space-y-2"
+        class="rounded-xl border-2 border-indigo-200 bg-indigo-50/60 p-4 shadow-sm space-y-3"
       >
-        <h3 class="text-sm font-semibold text-slate-800">Sincronización automática INVIMA</h3>
-        <p v-if="syncScheduleLoading" class="text-sm text-slate-500">Consultando programación…</p>
+        <div>
+          <h3 class="text-sm font-semibold text-indigo-950">
+            Sincronización automática INVIMA (hora del job diario)
+          </h3>
+          <p class="text-xs text-indigo-800/90 mt-1">
+            La hora <strong>no se configura en esta pantalla</strong>. Se define en las variables de
+            entorno del servicio <strong>worker</strong> en Easypanel y requiere redeploy del worker.
+          </p>
+        </div>
+
+        <p v-if="syncScheduleLoading" class="text-sm text-slate-600">
+          Consultando programación actual…
+        </p>
+
         <template v-else-if="syncSchedule">
-          <p class="text-sm text-slate-700">
-            <span
-              class="inline-flex text-xs font-medium px-2 py-0.5 rounded mr-2"
-              :class="syncSchedule.enabled ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-100 text-slate-600'"
-            >
-              {{ syncSchedule.enabled ? 'Activa' : 'Desactivada' }}
-            </span>
-            {{ syncSchedule.humanSchedule }}
-          </p>
-          <p class="text-xs text-slate-500 font-mono">{{ syncSchedule.description }}</p>
-          <p class="text-xs text-slate-500">
-            Configure en el servicio <strong>worker</strong> de Easypanel (requiere redeploy del worker):
-            <code class="bg-slate-100 px-1 rounded">INVIMA_SYNC_CRON</code>,
-            <code class="bg-slate-100 px-1 rounded">INVIMA_SYNC_CRON_TZ</code>,
-            <code class="bg-slate-100 px-1 rounded">INVIMA_SYNC_CRON_ENABLED</code>.
-            Ejemplos: <code class="bg-slate-100 px-1 rounded">0 6 * * *</code> (6:00 AM),
-            <code class="bg-slate-100 px-1 rounded">49 14 * * *</code> (2:49 PM).
-          </p>
+          <div class="rounded-lg bg-white border border-indigo-100 px-3 py-2">
+            <p class="text-sm text-slate-800">
+              <span
+                class="inline-flex text-xs font-medium px-2 py-0.5 rounded mr-2"
+                :class="
+                  syncSchedule.enabled
+                    ? 'bg-emerald-100 text-emerald-800'
+                    : 'bg-slate-100 text-slate-600'
+                "
+              >
+                {{ syncSchedule.enabled ? 'Activa' : 'Desactivada' }}
+              </span>
+              <strong>Programada:</strong> {{ syncSchedule.humanSchedule }}
+            </p>
+            <p class="text-xs text-slate-500 font-mono mt-1">{{ syncSchedule.description }}</p>
+          </div>
         </template>
+
+        <p
+          v-else-if="syncScheduleError"
+          class="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2"
+        >
+          No se pudo leer la programación del servidor
+          ({{ syncScheduleError }}). Redespliegue backend y worker con la versión reciente.
+        </p>
+
+        <div class="rounded-lg bg-white border border-indigo-100 px-3 py-2 text-xs text-slate-700 space-y-2">
+          <p class="font-medium text-slate-800">Cómo cambiar la hora (Easypanel → servicio worker)</p>
+          <table class="w-full text-left border-collapse">
+            <thead>
+              <tr class="text-slate-500 border-b">
+                <th class="py-1 pr-3 font-medium">Variable</th>
+                <th class="py-1 pr-3 font-medium">Ejemplo</th>
+                <th class="py-1 font-medium">Significado</th>
+              </tr>
+            </thead>
+            <tbody class="font-mono text-[11px]">
+              <tr class="border-b border-slate-50">
+                <td class="py-1.5 pr-3">INVIMA_SYNC_CRON</td>
+                <td class="py-1.5 pr-3">0 6 * * *</td>
+                <td class="py-1.5 font-sans">6:00 AM diario</td>
+              </tr>
+              <tr class="border-b border-slate-50">
+                <td class="py-1.5 pr-3">INVIMA_SYNC_CRON</td>
+                <td class="py-1.5 pr-3">49 14 * * *</td>
+                <td class="py-1.5 font-sans">2:49 PM diario</td>
+              </tr>
+              <tr class="border-b border-slate-50">
+                <td class="py-1.5 pr-3">INVIMA_SYNC_CRON_TZ</td>
+                <td class="py-1.5 pr-3">America/Bogota</td>
+                <td class="py-1.5 font-sans">Zona horaria</td>
+              </tr>
+              <tr>
+                <td class="py-1.5 pr-3">INVIMA_SYNC_CRON_ENABLED</td>
+                <td class="py-1.5 pr-3">true</td>
+                <td class="py-1.5 font-sans">Activar / desactivar job</td>
+              </tr>
+            </tbody>
+          </table>
+          <p class="text-slate-500 font-sans">
+            Formato cron: <code class="bg-slate-100 px-1 rounded">minuto hora día mes día_semana</code>.
+            La sync manual sigue en Maestros INVIMA → pestaña Sincronización.
+          </p>
+        </div>
       </div>
 
       <div class="flex flex-wrap gap-2 border-b border-slate-200 pb-2">

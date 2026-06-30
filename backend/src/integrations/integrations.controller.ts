@@ -21,6 +21,7 @@ import { ExternalIntegrationsService } from './external-integrations.service';
 import { HisService } from './his.service';
 import { HrAdapterService } from './hr-adapter.service';
 import { InvimaAlertService } from './invima-alert.service';
+import { InvimaSyncDiagnosticsService } from './invima-sync-diagnostics.service';
 import {
   describeInvimaSyncSchedule,
   formatInvimaSyncCronHuman,
@@ -36,6 +37,7 @@ export class IntegrationsController {
     private readonly config: ConfigService,
     private readonly externalIntegrations: ExternalIntegrationsService,
     private readonly invimaAlert: InvimaAlertService,
+    private readonly invimaSyncDiagnostics: InvimaSyncDiagnosticsService,
   ) {}
 
   @Public()
@@ -283,6 +285,12 @@ export class IntegrationsController {
       description: describeInvimaSyncSchedule(cron, tz),
       humanSchedule: formatInvimaSyncCronHuman(cron, tz),
     };
+  }
+
+  @RequirePermissions('admin.users')
+  @Get('external/sync-diagnostics')
+  syncDiagnostics() {
+    return this.invimaSyncDiagnostics.getDiagnostics();
   }
 
   @RequirePermissions('admin.users')
