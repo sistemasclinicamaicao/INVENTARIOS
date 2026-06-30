@@ -4,6 +4,7 @@ import { createHash } from 'crypto';
 import { DataSource } from 'typeorm';
 import { normalizeCumKey } from '../../integrations/cum-key.util';
 import { parseInvimaPmvWorkbook, type ParsedPmvRow } from './invima-pmv.parser';
+import { mapSocrataRowsToPmvRegistros } from './invima-pmv-socrata.mapper';
 import {
   parseSortDirection,
   resolveSqlOrderClause,
@@ -230,28 +231,20 @@ export class InvimaPmvService {
     }
   }
 
-  async importFromBuffer(options: {
-    buffer: Buffer;
-    filename: string;
+  async importParsedRows(options: {
+    rows: ParsedPmvRow[];
+    sourceLabel: string;
+    fileHash?: string | null;
     replaceExisting?: boolean;
   }) {
-    const ext = options.filename.toLowerCase();
-    if (!ext.endsWith('.xlsx') && !ext.endsWith('.xlsb') && !ext.endsWith('.xls')) {
-      throw new BadRequestException('Formato no soportado. Use .xlsx o .xlsb');
+    const { rows, sourceLabel } = options;
+    if (rows.length === 0) {
+      throw new BadRequestException('No hay filas PMV para importar');
     }
 
-    let parsed: ParsedPmvRow[];
-    try {
-      parsed = parseInvimaPmvWorkbook(options.buffer);
-    } catch (e) {
-      throw new BadRequestException(`No se pudo leer el Excel: ${(e as Error).message}`);
-    }
-
-    if (parsed.length === 0) {
-      throw new BadRequestException('El archivo no contiene filas PMV válidas');
-    }
-
-    const fileHash = createHash('sha256').update(options.buffer).digest('hex');
+    const fileHash =
+      options.fileHash ??
+      createHash('sha256').update(`${sourceLabel}:${rows.length}`).digest('hex');
     const replaceExisting = options.replaceExisting !== false;
 
     return this.dataSource.transaction(async (manager) => {
@@ -273,13 +266,13 @@ export class InvimaPmvService {
         `INSERT INTO invima_pmv_import_batches (source_filename, rows_imported, file_hash)
          VALUES ($1, 0, $2)
          RETURNING id`,
-        [options.filename, fileHash],
+        [sourceLabel, fileHash],
       );
       const batchId = batch.id;
 
       let inserted = 0;
-      for (let i = 0; i < parsed.length; i += BATCH_INSERT) {
-        const chunk = parsed.slice(i, i + BATCH_INSERT);
+      for (let i = 0; i < rows.length; i += BATCH_INSERT) {
+        const chunk = rows.slice(i, i + BATCH_INSERT);
         const values: unknown[] = [];
         const placeholders: string[] = [];
         let p = 1;
@@ -329,9 +322,44 @@ export class InvimaPmvService {
         ok: true,
         rowsImported: inserted,
         batchId,
-        sourceFilename: options.filename,
-        message: `Importados ${inserted.toLocaleString()} precios PMV desde ${options.filename}`,
+        sourceFilename: sourceLabel,
+        message: `Importados ${inserted.toLocaleString()} precios PMV desde ${sourceLabel}`,
       };
+    });
+  }
+
+  mapSocrataRows(rows: Record<string, unknown>[]): ParsedPmvRow[] {
+    return mapSocrataRowsToPmvRegistros(rows);
+  }
+
+  async importFromBuffer(options: {
+    buffer: Buffer;
+    filename: string;
+    replaceExisting?: boolean;
+  }) {
+    const ext = options.filename.toLowerCase();
+    if (!ext.endsWith('.xlsx') && !ext.endsWith('.xlsb') && !ext.endsWith('.xls')) {
+      throw new BadRequestException('Formato no soportado. Use .xlsx o .xlsb');
+    }
+
+    let parsed: ParsedPmvRow[];
+    try {
+      parsed = parseInvimaPmvWorkbook(options.buffer);
+    } catch (e) {
+      throw new BadRequestException(`No se pudo leer el Excel: ${(e as Error).message}`);
+    }
+
+    if (parsed.length === 0) {
+      throw new BadRequestException('El archivo no contiene filas PMV válidas');
+    }
+
+    const fileHash = createHash('sha256').update(options.buffer).digest('hex');
+
+    return this.importParsedRows({
+      rows: parsed,
+      sourceLabel: options.filename,
+      fileHash,
+      replaceExisting: options.replaceExisting,
     });
   }
 }

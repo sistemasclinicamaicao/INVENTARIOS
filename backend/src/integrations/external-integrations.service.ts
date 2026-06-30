@@ -61,6 +61,11 @@ import {
   sanitizeMedicamentosPosRow,
 } from './medicamentos-pos.presets';
 import {
+  INVIMA_PMV_DATASET_ID,
+  INVIMA_PMV_INTEGRATION_NAME,
+  sanitizeInvimaPmvSocrataRow,
+} from './invima-pmv.presets';
+import {
   SocrataIntegrationConfig,
   SocrataQueryClient,
   type SocrataViewMetadata,
@@ -71,6 +76,18 @@ import {
 } from '../common/table-sort.util';
 
 const KRYSTALOS_PMV_SORT_KEYS = new Set(['pmvPrecioUnitario', 'pmvRegulado']);
+
+export type CatalogSyncSource = 'manual' | 'cron' | 'api';
+
+type CatalogSyncStatusRow = {
+  syncKey: string;
+  syncedAt: string;
+  source: CatalogSyncSource;
+  ok: boolean;
+  stepsCompleted: number | null;
+  totalSteps: number | null;
+  message: string | null;
+};
 
 type DbRow = {
   id: string;
@@ -835,7 +852,75 @@ export class ExternalIntegrationsService {
   }
 
   /** Estado de sincronización local + fechas del portal datos.gov.co. */
+  private async recordCatalogSyncStatus(
+    syncKey: string,
+    source: CatalogSyncSource,
+    ok: boolean,
+    meta?: { stepsCompleted?: number; totalSteps?: number; message?: string },
+  ): Promise<void> {
+    await this.dataSource.query(
+      `INSERT INTO catalog_sync_status
+         (sync_key, synced_at, source, ok, steps_completed, total_steps, message, updated_at)
+       VALUES ($1, NOW(), $2, $3, $4, $5, $6, NOW())
+       ON CONFLICT (sync_key) DO UPDATE SET
+         synced_at = EXCLUDED.synced_at,
+         source = EXCLUDED.source,
+         ok = EXCLUDED.ok,
+         steps_completed = EXCLUDED.steps_completed,
+         total_steps = EXCLUDED.total_steps,
+         message = EXCLUDED.message,
+         updated_at = NOW()`,
+      [
+        syncKey,
+        source,
+        ok,
+        meta?.stepsCompleted ?? null,
+        meta?.totalSteps ?? null,
+        meta?.message ?? null,
+      ],
+    );
+  }
+
+  async recordFullCatalogSync(
+    source: CatalogSyncSource,
+    ok: boolean,
+    meta?: { stepsCompleted?: number; totalSteps?: number; message?: string },
+  ): Promise<void> {
+    await this.recordCatalogSyncStatus('FULL_ALL', source, ok, meta);
+  }
+
+  private async loadCatalogSyncStatusMap(): Promise<Map<string, CatalogSyncStatusRow>> {
+    const rows = await this.dataSource.query<CatalogSyncStatusRow[]>(
+      `SELECT sync_key AS "syncKey",
+              synced_at AS "syncedAt",
+              source,
+              ok,
+              steps_completed AS "stepsCompleted",
+              total_steps AS "totalSteps",
+              message
+       FROM catalog_sync_status`,
+    );
+    return new Map(rows.map((r) => [r.syncKey, r]));
+  }
+
   async getSyncCatalog() {
+    let syncStatusMap: Map<string, CatalogSyncStatusRow>;
+    try {
+      syncStatusMap = await this.loadCatalogSyncStatusMap();
+    } catch (err) {
+      this.logger.warn(
+        `catalog_sync_status no disponible (${(err as Error).message}); fechas de sync omitidas`,
+      );
+      syncStatusMap = new Map();
+    }
+
+    const resolveSyncedAt = (key: string, importedAt: string | null): string | null => {
+      const status = syncStatusMap.get(key);
+      if (status?.syncedAt) return status.syncedAt;
+      return importedAt;
+    };
+
+    const fullSync = syncStatusMap.get('FULL_ALL') ?? null;
     const invimaBatches = await this.invima.listBatches();
     const latestInvimaByType = new Map<
       string,
@@ -862,6 +947,8 @@ export class ExternalIntegrationsService {
       datasetId: string;
       rowsImported: number | null;
       importedAt: string | null;
+      syncedAt: string | null;
+      syncSource: CatalogSyncSource | null;
       portalUpdatedAt: string | null;
       portalMetadataError?: string;
     };
@@ -871,13 +958,17 @@ export class ExternalIntegrationsService {
     for (const preset of INVIMA_SOCRATA_PRESETS) {
       const batch = latestInvimaByType.get(preset.listType);
       const portal = await this.getPortalMetadataCached(preset.datasetId);
+      const importedAt = batch?.importedAt ?? null;
+      const listStatus = syncStatusMap.get(preset.listType);
       items.push({
         key: preset.listType,
         listType: preset.listType,
         label: INVIMA_LIST_TYPE_TITLES[preset.listType] ?? preset.label,
         datasetId: preset.datasetId,
         rowsImported: batch?.rowsImported ?? null,
-        importedAt: batch?.importedAt ?? null,
+        importedAt,
+        syncedAt: resolveSyncedAt(preset.listType, importedAt),
+        syncSource: listStatus?.source ?? null,
         portalUpdatedAt:
           portal.metadata?.rowsUpdatedAt ??
           portal.metadata?.publicationDate ??
@@ -889,17 +980,40 @@ export class ExternalIntegrationsService {
     const posPortal = await this.getPortalMetadataCached(
       MEDICAMENTOS_POS_DATASET_ID,
     );
+    const posImportedAt = posBatch?.importedAt ?? null;
+    const posStatus = syncStatusMap.get('POS');
     items.push({
       key: 'POS',
       label: 'Medicamentos POS',
       datasetId: MEDICAMENTOS_POS_DATASET_ID,
       rowsImported: posBatch?.rowsImported ?? null,
-      importedAt: posBatch?.importedAt ?? null,
+      importedAt: posImportedAt,
+      syncedAt: resolveSyncedAt('POS', posImportedAt),
+      syncSource: posStatus?.source ?? null,
       portalUpdatedAt:
         posPortal.metadata?.rowsUpdatedAt ??
         posPortal.metadata?.publicationDate ??
         null,
       portalMetadataError: posPortal.error,
+    });
+
+    const pmvBatch = await this.invimaPmv.latestBatch();
+    const pmvPortal = await this.getPortalMetadataCached(INVIMA_PMV_DATASET_ID);
+    const pmvImportedAt = pmvBatch?.importedAt ?? null;
+    const pmvStatus = syncStatusMap.get('PMV');
+    items.push({
+      key: 'PMV',
+      label: 'Precios PMV',
+      datasetId: INVIMA_PMV_DATASET_ID,
+      rowsImported: pmvBatch?.rowsImported ?? null,
+      importedAt: pmvImportedAt,
+      syncedAt: resolveSyncedAt('PMV', pmvImportedAt),
+      syncSource: pmvStatus?.source ?? null,
+      portalUpdatedAt:
+        pmvPortal.metadata?.rowsUpdatedAt ??
+        pmvPortal.metadata?.publicationDate ??
+        null,
+      portalMetadataError: pmvPortal.error,
     });
 
     const [krystalosIntegration] = await this.dataSource.query<
@@ -916,27 +1030,45 @@ export class ExternalIntegrationsService {
        ORDER BY updated_at DESC
        LIMIT 1`,
     );
+    const krystalosCacheAt = this.krystalosRowsCache
+      ? new Date(this.krystalosRowsCache.fetchedAt).toISOString()
+      : null;
+    const krystalosStatus = syncStatusMap.get('KRYSTALOS');
     items.push({
       key: 'KRYSTALOS',
       label: 'Medicamentos Krystalos',
       datasetId: krystalosIntegration?.name ?? 'API REST',
       rowsImported: this.krystalosRowsCache?.rows.length ?? null,
-      importedAt: this.krystalosRowsCache
-        ? new Date(this.krystalosRowsCache.fetchedAt).toISOString()
-        : null,
+      importedAt: krystalosCacheAt,
+      syncedAt: resolveSyncedAt('KRYSTALOS', krystalosCacheAt),
+      syncSource: krystalosStatus?.source ?? null,
       portalUpdatedAt: null,
     });
 
-    return { items };
+    return {
+      items,
+      lastFullSync: fullSync
+        ? {
+            syncedAt: fullSync.syncedAt,
+            source: fullSync.source,
+            ok: fullSync.ok,
+            stepsCompleted: fullSync.stepsCompleted,
+            totalSteps: fullSync.totalSteps,
+            message: fullSync.message,
+          }
+        : null,
+    };
   }
 
   /** Refresca caché de medicamentos Krystalos desde la integración REST activa. */
-  async syncKrystalosMedicamentos() {
+  async syncKrystalosMedicamentos(source: CatalogSyncSource = 'manual') {
     const fetched = await this.fetchKrystalosMedicamentosRows(true);
     const count = fetched.rows.length;
+    const message = `${count.toLocaleString()} medicamentos Krystalos actualizados desde API`;
+    await this.recordCatalogSyncStatus('KRYSTALOS', source, true, { message });
     return {
       ok: true,
-      message: `${count.toLocaleString()} medicamentos Krystalos actualizados desde API`,
+      message,
       rowsImported: count,
       integrationName: fetched.integrationName,
       url: fetched.url,
@@ -949,6 +1081,7 @@ export class ExternalIntegrationsService {
   async syncInvimaSocrataByListType(
     listType: InvimaListType,
     replaceExisting = true,
+    source: CatalogSyncSource = 'manual',
   ) {
     if (!INVIMA_LIST_TYPE_ORDER.includes(listType)) {
       throw new BadRequestException(
@@ -982,6 +1115,7 @@ export class ExternalIntegrationsService {
     }
 
     const r = await this.syncSocrata(row.id, replaceExisting);
+    await this.recordCatalogSyncStatus(listType, source, true, { message: r.message });
     return {
       integrationId: row.id,
       integrationName: row.name,
@@ -997,10 +1131,13 @@ export class ExternalIntegrationsService {
   }
 
   /**
-   * Sincroniza los 6 catálogos en el mismo orden que el botón «Sincronizar todos» del UI.
+   * Sincroniza los 7 catálogos en el mismo orden que el botón «Sincronizar todos» del UI.
    * Se detiene en el primer fallo.
    */
-  async syncAllCatalogsSequential(replaceExisting = true) {
+  async syncAllCatalogsSequential(
+    replaceExisting = true,
+    source: CatalogSyncSource = 'manual',
+  ) {
     type StepResult = {
       step: string;
       label: string;
@@ -1012,10 +1149,16 @@ export class ExternalIntegrationsService {
 
     const startAll = Date.now();
     const results: StepResult[] = [];
-    const totalSteps = INVIMA_LIST_TYPE_ORDER.length + 2;
+    const totalSteps = INVIMA_LIST_TYPE_ORDER.length + 3;
 
-    const fail = (failedStep: string) => {
+    const fail = async (failedStep: string) => {
       const okCount = results.filter((r) => r.ok).length;
+      const message = `Sincronización detenida en «${failedStep}». ${okCount}/${totalSteps} pasos completados.`;
+      await this.recordFullCatalogSync(source, false, {
+        stepsCompleted: okCount,
+        totalSteps,
+        message,
+      });
       return {
         ok: false,
         stepsCompleted: okCount,
@@ -1023,7 +1166,7 @@ export class ExternalIntegrationsService {
         durationMs: Date.now() - startAll,
         failedStep,
         results,
-        message: `Sincronización detenida en «${failedStep}». ${okCount}/${totalSteps} pasos completados.`,
+        message,
       };
     };
 
@@ -1031,7 +1174,7 @@ export class ExternalIntegrationsService {
       const label = INVIMA_LIST_TYPE_TITLES[listType] ?? listType;
       const stepStart = Date.now();
       try {
-        const r = await this.syncInvimaSocrataByListType(listType, replaceExisting);
+        const r = await this.syncInvimaSocrataByListType(listType, replaceExisting, source);
         results.push({
           step: listType,
           label,
@@ -1041,7 +1184,7 @@ export class ExternalIntegrationsService {
           durationMs: Date.now() - stepStart,
         });
         if (r.ok === false) {
-          return fail(label);
+          return await fail(label);
         }
       } catch (e) {
         const message = e instanceof Error ? e.message : String(e);
@@ -1052,13 +1195,13 @@ export class ExternalIntegrationsService {
           message,
           durationMs: Date.now() - stepStart,
         });
-        return fail(label);
+        return await fail(label);
       }
     }
 
     const posStart = Date.now();
     try {
-      const r = await this.syncMedicamentosPos(replaceExisting);
+      const r = await this.syncMedicamentosPos(replaceExisting, source);
       results.push({
         step: 'MEDICAMENTOS_POS',
         label: 'Medicamentos POS',
@@ -1076,12 +1219,35 @@ export class ExternalIntegrationsService {
         message,
         durationMs: Date.now() - posStart,
       });
-      return fail('Medicamentos POS');
+      return await fail('Medicamentos POS');
+    }
+
+    const pmvStart = Date.now();
+    try {
+      const r = await this.syncInvimaPmv(replaceExisting, source);
+      results.push({
+        step: 'INVIMA_PMV',
+        label: 'Precios PMV',
+        ok: true,
+        message: r.message,
+        rowsImported: r.rowsImported,
+        durationMs: Date.now() - pmvStart,
+      });
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      results.push({
+        step: 'INVIMA_PMV',
+        label: 'Precios PMV',
+        ok: false,
+        message,
+        durationMs: Date.now() - pmvStart,
+      });
+      return await fail('Precios PMV');
     }
 
     const krystalosStart = Date.now();
     try {
-      const r = await this.syncKrystalosMedicamentos();
+      const r = await this.syncKrystalosMedicamentos(source);
       results.push({
         step: 'KRYSTALOS_MEDICAMENTOS',
         label: 'Medicamentos Krystalos',
@@ -1099,10 +1265,16 @@ export class ExternalIntegrationsService {
         message,
         durationMs: Date.now() - krystalosStart,
       });
-      return fail('Medicamentos Krystalos');
+      return await fail('Medicamentos Krystalos');
     }
 
     const totalImported = results.reduce((s, r) => s + (r.rowsImported ?? 0), 0);
+    const successMessage = `Los ${totalSteps} catálogos se sincronizaron correctamente (${totalImported.toLocaleString()} filas en total).`;
+    await this.recordFullCatalogSync(source, true, {
+      stepsCompleted: totalSteps,
+      totalSteps,
+      message: successMessage,
+    });
     return {
       ok: true,
       stepsCompleted: totalSteps,
@@ -1110,7 +1282,7 @@ export class ExternalIntegrationsService {
       durationMs: Date.now() - startAll,
       failedStep: null as string | null,
       results,
-      message: `Los ${totalSteps} catálogos se sincronizaron correctamente (${totalImported.toLocaleString()} filas en total).`,
+      message: successMessage,
     };
   }
 
@@ -1560,7 +1732,10 @@ export class ExternalIntegrationsService {
   }
 
   /** Sincroniza catálogo Medicamentos POS desde Socrata a BD local. */
-  async syncMedicamentosPos(replaceExisting = true) {
+  async syncMedicamentosPos(
+    replaceExisting = true,
+    source: CatalogSyncSource = 'manual',
+  ) {
     const [row] = await this.dataSource.query<DbRow[]>(
       `SELECT ${SELECT_COLUMNS}
        FROM external_integrations
@@ -1596,6 +1771,9 @@ export class ExternalIntegrationsService {
       replaceExisting,
     });
 
+    const message = `Importados ${importResult.rowsImported} medicamentos POS desde datos.gov.co (${MEDICAMENTOS_POS_DATASET_ID})`;
+    await this.recordCatalogSyncStatus('POS', source, true, { message });
+
     return {
       ok: true,
       integrationId: row.id,
@@ -1605,7 +1783,141 @@ export class ExternalIntegrationsService {
       rowsImported: importResult.rowsImported,
       batchId: importResult.batchId,
       durationMs: Date.now() - start,
-      message: `Importados ${importResult.rowsImported} medicamentos POS desde datos.gov.co (${MEDICAMENTOS_POS_DATASET_ID})`,
+      message,
+    };
+  }
+
+  /** Descarga catálogo PMV desde Socrata (solo para sincronización). */
+  private async fetchInvimaPmvRowsFromSocrata(): Promise<{
+    integrationName: string;
+    url: string;
+    httpStatus: number;
+    durationMs: number;
+    rows: Record<string, unknown>[];
+  }> {
+    const [row] = await this.dataSource.query<DbRow[]>(
+      `SELECT ${SELECT_COLUMNS}
+       FROM external_integrations
+       WHERE is_active = TRUE
+         AND integration_kind = 'SOCRATA_OPEN_DATA'
+         AND (
+           socrata_dataset_id = $1
+           OR name ILIKE $2
+         )
+       ORDER BY updated_at DESC
+       LIMIT 1`,
+      [INVIMA_PMV_DATASET_ID, `%${INVIMA_PMV_INTEGRATION_NAME}%`],
+    );
+    if (!row) {
+      throw new NotFoundException(
+        'No hay integración Socrata activa «PRECIOS PMV». Configúrela en Integraciones API externas.',
+      );
+    }
+
+    const cfg = this.socrataConfig(row);
+    const syncQuery = this.socrata.stripLimitAndOffset(cfg.query);
+    const start = Date.now();
+
+    try {
+      const fetched = await this.socrata.fetchAllPages({ ...cfg, query: syncQuery });
+      await this.logPoll(
+        row.id,
+        'POST',
+        fetched.lastUrl,
+        fetched.ok ? 200 : 502,
+        Date.now() - start,
+      );
+
+      if (!fetched.ok) {
+        throw new ServiceUnavailableException(
+          fetched.message ??
+            'Precios PMV respondió con error. Verifique App Token (X-App-Token) en Integraciones.',
+        );
+      }
+
+      const rows = fetched.rows.map((r) => sanitizeInvimaPmvSocrataRow(r));
+      if (!rows.length) {
+        throw new ServiceUnavailableException(
+          'Precios PMV no devolvió filas. Revise la consulta SoQL y el dataset nauz-qkjw.',
+        );
+      }
+
+      return {
+        integrationName: row.name,
+        url: fetched.lastUrl,
+        httpStatus: 200,
+        durationMs: Date.now() - start,
+        rows,
+      };
+    } catch (e) {
+      if (
+        e instanceof ServiceUnavailableException ||
+        e instanceof BadRequestException ||
+        e instanceof NotFoundException
+      ) {
+        throw e;
+      }
+      const msg = (e as Error).message;
+      this.logger.error(`Precios PMV: ${msg}`);
+      throw new ServiceUnavailableException(
+        `No se pudo consultar Precios PMV: ${msg}`,
+      );
+    }
+  }
+
+  /** Sincroniza catálogo Precios PMV desde Socrata a BD local. */
+  async syncInvimaPmv(
+    replaceExisting = true,
+    source: CatalogSyncSource = 'manual',
+  ) {
+    const [row] = await this.dataSource.query<DbRow[]>(
+      `SELECT ${SELECT_COLUMNS}
+       FROM external_integrations
+       WHERE is_active = TRUE
+         AND integration_kind = 'SOCRATA_OPEN_DATA'
+         AND (
+           socrata_dataset_id = $1
+           OR name ILIKE $2
+         )
+       ORDER BY updated_at DESC
+       LIMIT 1`,
+      [INVIMA_PMV_DATASET_ID, `%${INVIMA_PMV_INTEGRATION_NAME}%`],
+    );
+
+    if (!row) {
+      throw new BadRequestException(
+        'No hay integración activa «PRECIOS PMV». Créela en Configuración → Integraciones.',
+      );
+    }
+    if (!row.authSecretEnc) {
+      throw new BadRequestException(
+        `Falta App Token en integración "${row.name}". Edítela y pegue el token.`,
+      );
+    }
+
+    const start = Date.now();
+    const fetched = await this.fetchInvimaPmvRowsFromSocrata();
+    const parsed = this.invimaPmv.mapSocrataRows(fetched.rows);
+    const sourceLabel = `socrata:${INVIMA_PMV_DATASET_ID}@${new Date().toISOString().slice(0, 10)}`;
+    const importResult = await this.invimaPmv.importParsedRows({
+      rows: parsed,
+      sourceLabel,
+      replaceExisting,
+    });
+
+    const message = `Importados ${importResult.rowsImported} precios PMV desde datos.gov.co (${INVIMA_PMV_DATASET_ID})`;
+    await this.recordCatalogSyncStatus('PMV', source, true, { message });
+
+    return {
+      ok: true,
+      integrationId: row.id,
+      integrationName: row.name,
+      datasetId: INVIMA_PMV_DATASET_ID,
+      rowsFetched: fetched.rows.length,
+      rowsImported: importResult.rowsImported,
+      batchId: importResult.batchId,
+      durationMs: Date.now() - start,
+      message,
     };
   }
 

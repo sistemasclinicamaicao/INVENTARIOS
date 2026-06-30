@@ -21,6 +21,11 @@ import { ExternalIntegrationsService } from './external-integrations.service';
 import { HisService } from './his.service';
 import { HrAdapterService } from './hr-adapter.service';
 import { InvimaAlertService } from './invima-alert.service';
+import {
+  describeInvimaSyncSchedule,
+  formatInvimaSyncCronHuman,
+  resolveInvimaSyncCron,
+} from '../workers/invima-sync-cron.util';
 
 @ApiTags('integrations')
 @Controller('integrations')
@@ -186,7 +191,7 @@ export class IntegrationsController {
   @RequirePermissions('admin.users')
   @Post('external/invima/run-daily-job')
   runInvimaDailyJob() {
-    return this.invimaAlert.runDailyInvimaJob();
+    return this.invimaAlert.runDailyInvimaJob('api');
   }
 
   @RequirePermissions('admin.users')
@@ -242,9 +247,42 @@ export class IntegrationsController {
   }
 
   @RequirePermissions('admin.users')
+  @Post('external/socrata/record-full-sync')
+  recordFullCatalogSync(
+    @Body()
+    body: {
+      ok?: boolean;
+      stepsCompleted?: number;
+      totalSteps?: number;
+      message?: string;
+    },
+  ) {
+    return this.externalIntegrations
+      .recordFullCatalogSync('manual', body.ok !== false, {
+        stepsCompleted: body.stepsCompleted,
+        totalSteps: body.totalSteps,
+        message: body.message,
+      })
+      .then(() => ({ ok: true }));
+  }
+
+  @RequirePermissions('admin.users')
   @Get('external/socrata/sync-catalog')
   syncCatalog() {
     return this.externalIntegrations.getSyncCatalog();
+  }
+
+  @RequirePermissions('admin.users')
+  @Get('external/sync-schedule')
+  syncSchedule() {
+    const { cron, tz, enabled } = resolveInvimaSyncCron(this.config);
+    return {
+      cron,
+      tz,
+      enabled,
+      description: describeInvimaSyncSchedule(cron, tz),
+      humanSchedule: formatInvimaSyncCronHuman(cron, tz),
+    };
   }
 
   @RequirePermissions('admin.users')
@@ -253,6 +291,12 @@ export class IntegrationsController {
     return this.externalIntegrations.syncMedicamentosPos(
       dto.replaceExisting !== false,
     );
+  }
+
+  @RequirePermissions('admin.users')
+  @Post('external/socrata/sync-invimaf-pmv')
+  syncInvimaPmv(@Body() dto: SyncSocrataDto) {
+    return this.externalIntegrations.syncInvimaPmv(dto.replaceExisting !== false);
   }
 
   @RequirePermissions('admin.users')

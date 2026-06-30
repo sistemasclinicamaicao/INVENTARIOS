@@ -20,7 +20,7 @@ export interface ParsedPmvRow {
 
 const PMV_SHEET = 'PMV';
 
-function cellStr(v: unknown): string | null {
+export function cellStr(v: unknown): string | null {
   if (v == null || v === '') return null;
   return String(v).trim() || null;
 }
@@ -33,7 +33,14 @@ function parsePrice(v: unknown): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-function parseExcelDate(v: unknown): string | null {
+/** Precio PMV: numérico o null si el portal indica «No regulado». */
+export function parsePmvNumeric(v: unknown): number | null {
+  if (v == null || v === '') return null;
+  if (typeof v === 'string' && /^no\s*regulado$/i.test(v.trim())) return null;
+  return parsePrice(v);
+}
+
+export function parseExcelDate(v: unknown): string | null {
   if (v == null || v === '') return null;
   if (typeof v === 'number' && Number.isFinite(v)) {
     const d = XLSX.SSF.parse_date_code(v);
@@ -55,14 +62,14 @@ function pickRow(obj: Record<string, unknown>): ParsedPmvRow {
     medicamento: cellStr(obj['Medicamento']),
     cantidadUnidadMedida: cellStr(obj['Cantidad por unidad de medida']),
     unidadMedida: cellStr(obj['Unidad de medida']),
-    precioMaxInstitucional: parsePrice(
+    precioMaxInstitucional: parsePmvNumeric(
       obj['Precio máximo de venta transacción primaria, secundaria y final Institucional'],
     ),
-    margenIps: parsePrice(obj['Margen para IPS']),
-    precioMaxComercialPs: parsePrice(
+    margenIps: parsePmvNumeric(obj['Margen para IPS']),
+    precioMaxComercialPs: parsePmvNumeric(
       obj['Precio máximo de venta transacción primaria y secundaria comercial'],
     ),
-    precioMaxComercialFinal: parsePrice(
+    precioMaxComercialFinal: parsePmvNumeric(
       obj['Precio máximo de venta transacción final comercial'],
     ),
     circularCnpmdm: cellStr(obj['Circular CNPMDM']),

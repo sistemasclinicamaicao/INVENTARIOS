@@ -2,9 +2,11 @@
 definePageMeta({ layout: 'app' })
 
 import {
+  applyInvimaPmvPreset,
   applyInvimaSocrataPreset,
   applyMedicamentosPosPreset,
   INVIMA_LIST_TYPE_ORDER,
+  INVIMA_PMV_DATASET_ID,
   INVIMA_SOCRATA_PRESETS,
   INVIMA_SOQL,
   type InvimaListType,
@@ -25,7 +27,7 @@ const showAdvanced = ref(false)
 type AuthMethod = 'NONE' | 'API_KEY' | 'BEARER' | 'BASIC'
 type IntegrationKind = 'ERP_PURCHASE_ORDER' | 'SOCRATA_OPEN_DATA' | 'REST_QUERY'
 type SocrataApiVersion = 'SODA2' | 'SODA3'
-type SyncTarget = 'NONE' | 'INVIMA_REGISTROS'
+type SyncTarget = 'NONE' | 'INVIMA_REGISTROS' | 'INVIMA_PMV'
 
 const INVIMA_SOQL_TEMPLATE = INVIMA_SOQL
 
@@ -55,6 +57,17 @@ type IntegrationRow = {
 const integrations = ref<IntegrationRow[]>([])
 const loading = ref(false)
 const saving = ref(false)
+
+interface SyncScheduleInfo {
+  cron: string
+  tz: string
+  enabled: boolean
+  description: string
+  humanSchedule: string
+}
+
+const syncSchedule = ref<SyncScheduleInfo | null>(null)
+const syncScheduleLoading = ref(false)
 const editingId = ref<string | null>(null)
 const editingHasSecret = ref(false)
 const invimaPresetKey = ref<InvimaSocrataPresetKey>('VIGENTE')
@@ -247,6 +260,12 @@ function applyPosPresetToForm() {
   invimaPresetKey.value = 'CUSTOM'
 }
 
+function applyPmvPresetToForm() {
+  form.value.integrationKind = 'SOCRATA_OPEN_DATA'
+  applyInvimaPmvPreset(form.value)
+  invimaPresetKey.value = 'CUSTOM'
+}
+
 function onAuthMethodChange() {
   if (
     form.value.integrationKind === 'ERP_PURCHASE_ORDER' &&
@@ -310,9 +329,16 @@ async function loadIntegrations() {
   else if (data) integrations.value = data
 }
 
+async function loadSyncSchedule() {
+  syncScheduleLoading.value = true
+  const { data } = await fetchApi<SyncScheduleInfo>('/integrations/external/sync-schedule')
+  syncScheduleLoading.value = false
+  syncSchedule.value = data ?? null
+}
+
 onMounted(async () => {
   if (!session.can('admin.users')) return
-  await loadIntegrations()
+  await Promise.all([loadIntegrations(), loadSyncSchedule()])
   const { data } = await fetchApi<{ source: string; count: number }>('/integrations/hr/status')
   if (data) hrStatus.value = data
 })
@@ -734,6 +760,33 @@ async function testHis() {
         {{ msg }}
       </p>
 
+      <div
+        class="rounded-xl border border-slate-200 bg-white p-4 shadow-sm space-y-2"
+      >
+        <h3 class="text-sm font-semibold text-slate-800">Sincronización automática INVIMA</h3>
+        <p v-if="syncScheduleLoading" class="text-sm text-slate-500">Consultando programación…</p>
+        <template v-else-if="syncSchedule">
+          <p class="text-sm text-slate-700">
+            <span
+              class="inline-flex text-xs font-medium px-2 py-0.5 rounded mr-2"
+              :class="syncSchedule.enabled ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-100 text-slate-600'"
+            >
+              {{ syncSchedule.enabled ? 'Activa' : 'Desactivada' }}
+            </span>
+            {{ syncSchedule.humanSchedule }}
+          </p>
+          <p class="text-xs text-slate-500 font-mono">{{ syncSchedule.description }}</p>
+          <p class="text-xs text-slate-500">
+            Configure en el servicio <strong>worker</strong> de Easypanel (requiere redeploy del worker):
+            <code class="bg-slate-100 px-1 rounded">INVIMA_SYNC_CRON</code>,
+            <code class="bg-slate-100 px-1 rounded">INVIMA_SYNC_CRON_TZ</code>,
+            <code class="bg-slate-100 px-1 rounded">INVIMA_SYNC_CRON_ENABLED</code>.
+            Ejemplos: <code class="bg-slate-100 px-1 rounded">0 6 * * *</code> (6:00 AM),
+            <code class="bg-slate-100 px-1 rounded">49 14 * * *</code> (2:49 PM).
+          </p>
+        </template>
+      </div>
+
       <div class="flex flex-wrap gap-2 border-b border-slate-200 pb-2">
         <button
           type="button"
@@ -947,6 +1000,13 @@ async function testHis() {
             >
               Usar plantilla Medicamentos POS (a7iv-sme8)
             </button>
+            <button
+              type="button"
+              class="mt-2 ml-4 text-sm text-teal-700 hover:text-teal-900 font-medium"
+              @click="applyPmvPresetToForm"
+            >
+              Usar plantilla Precios PMV ({{ INVIMA_PMV_DATASET_ID }})
+            </button>
           </div>
           <div>
             <label class="text-sm text-slate-700">ID dataset</label>
@@ -992,6 +1052,7 @@ async function testHis() {
             <select v-model="form.syncTarget" class="w-full p-2 border rounded-lg text-sm mt-1">
               <option value="NONE">Solo vista previa</option>
               <option value="INVIMA_REGISTROS">INVIMA ? Referencia CUM</option>
+              <option value="INVIMA_PMV">INVIMA ? Precios PMV</option>
             </select>
           </div>
           <div v-if="form.syncTarget === 'INVIMA_REGISTROS'">

@@ -121,6 +121,27 @@ export const MEDICAMENTOS_POS_SOQL_COLUMNS = [
 
 export const MEDICAMENTOS_POS_SOQL = `SELECT ${MEDICAMENTOS_POS_SOQL_COLUMNS.join(', ')}`
 
+export const INVIMA_PMV_DATASET_ID = 'nauz-qkjw'
+
+export const INVIMA_PMV_SOQL_COLUMNS = [
+  'no',
+  'id_mr',
+  'mercado_relevante',
+  'cum',
+  'medicamento',
+  'cantidad_por_unidad_de_medida',
+  'unidad_de_medida',
+  'precio_maximo_de_venta_transaccion_primaria_secundaria_y_final_institucional',
+  'margen_para_ips',
+  'precio_maximo_de_venta_transaccion_primaria_y_secundaria_comercial',
+  'precio_maximo_de_venta_transaccion_final_comercial',
+  'circular_cnpmdm',
+  'fecha_de_inicio_vigencia_precio_maximo_de_venta',
+  'ajuste_julio_2025',
+] as const
+
+export const INVIMA_PMV_SOQL = `SELECT ${INVIMA_PMV_SOQL_COLUMNS.join(', ')}`
+
 export function applyMedicamentosPosPreset(form: {
   name: string
   baseUrl: string
@@ -141,6 +162,28 @@ export function applyMedicamentosPosPreset(form: {
   form.socrataQuery = MEDICAMENTOS_POS_SOQL
   form.socrataPageSize = 1000
   form.syncTarget = 'NONE'
+}
+
+export function applyInvimaPmvPreset(form: {
+  name: string
+  baseUrl: string
+  authMethod: string
+  authHeaderName: string
+  socrataDatasetId: string
+  socrataApiVersion: string
+  socrataQuery: string
+  socrataPageSize: number
+  syncTarget: string
+}) {
+  form.name = 'PRECIOS PMV'
+  form.baseUrl = INVIMA_SOCRATA_BASE_URL
+  form.authMethod = 'API_KEY'
+  form.authHeaderName = 'X-App-Token'
+  form.socrataDatasetId = INVIMA_PMV_DATASET_ID
+  form.socrataApiVersion = 'SODA3'
+  form.socrataQuery = INVIMA_PMV_SOQL
+  form.socrataPageSize = 1000
+  form.syncTarget = 'INVIMA_PMV'
 }
 
 export function applyInvimaSocrataPreset(

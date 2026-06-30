@@ -125,8 +125,19 @@ interface SyncCatalogItem {
   datasetId: string
   rowsImported: number | null
   importedAt: string | null
+  syncedAt: string | null
+  syncSource?: 'manual' | 'cron' | 'api' | null
   portalUpdatedAt: string | null
   portalMetadataError?: string
+}
+
+interface LastFullSyncInfo {
+  syncedAt: string
+  source: 'manual' | 'cron' | 'api'
+  ok: boolean
+  stepsCompleted: number | null
+  totalSteps: number | null
+  message: string | null
 }
 
 const q = ref('')
@@ -140,6 +151,7 @@ const batches = ref<BatchRow[]>([])
 const posBatch = ref<PosBatchRow | null>(null)
 const pmvBatch = ref<PmvBatchRow | null>(null)
 const syncCatalog = ref<SyncCatalogItem[]>([])
+const lastFullSync = ref<LastFullSyncInfo | null>(null)
 const syncCatalogLoading = ref(false)
 const syncMsg = ref('')
 const syncAllRunning = ref(false)
@@ -148,6 +160,7 @@ const syncLoadingAny = computed(() =>
   syncAllRunning.value ||
   INVIMA_LIST_TYPE_ORDER.some((lt) => syncState.value[lt]?.loading) ||
   posSyncState.value.loading ||
+  pmvSyncState.value.loading ||
   krystalosSyncState.value.loading,
 )
 
@@ -163,6 +176,7 @@ const syncState = ref<Record<InvimaPresetListType, ListSyncState>>(
   ) as Record<InvimaPresetListType, ListSyncState>,
 )
 const posSyncState = ref<ListSyncState>({ loading: false, message: '', ok: null })
+const pmvSyncState = ref<ListSyncState>({ loading: false, message: '', ok: null })
 const krystalosSyncState = ref<ListSyncState>({ loading: false, message: '', ok: null })
 const expiredModalOpen = ref(false)
 const expiredModalItems = ref<ExpiredInvimaItem[]>([])
@@ -268,12 +282,16 @@ async function loadPosBatches() {
 
 async function loadSyncCatalog() {
   syncCatalogLoading.value = true
-  const { data } = await fetchApi<{ items: SyncCatalogItem[] }>(
+  const { data } = await fetchApi<{
+    items: SyncCatalogItem[]
+    lastFullSync?: LastFullSyncInfo | null
+  }>(
     '/integrations/external/socrata/sync-catalog',
   )
   syncCatalogLoading.value = false
   if (data?.items) {
     syncCatalog.value = data.items
+    lastFullSync.value = data.lastFullSync ?? null
     const posItem = data.items.find((i) => i.key === 'POS')
     posBatch.value =
       posItem?.rowsImported != null && posItem.importedAt
@@ -298,8 +316,16 @@ const syncTableColumns = [
   { key: 'datasetId', label: 'Dataset', thClass: 'px-4 py-3.5 font-semibold w-28' },
   { key: 'rowsImported', label: 'Registros', thClass: 'px-4 py-3.5 font-semibold w-28 text-right' },
   { key: 'importedAt', label: 'Última carga', thClass: 'px-4 py-3.5 font-semibold w-40' },
+  { key: 'syncedAt', label: 'Última sincronización', thClass: 'px-4 py-3.5 font-semibold w-44' },
   { key: 'portalUpdatedAt', label: 'Actualización portal', thClass: 'px-4 py-3.5 font-semibold w-40' },
 ] as const
+
+function formatSyncSource(source: LastFullSyncInfo['source'] | null | undefined): string {
+  if (source === 'cron') return 'Automático'
+  if (source === 'api') return 'API / manual admin'
+  if (source === 'manual') return 'Manual'
+  return ''
+}
 
 const syncCatalogDisplay = computed(() => {
   if (!syncSort.sortBy.value) return syncCatalog.value
@@ -311,6 +337,7 @@ const syncCatalogDisplay = computed(() => {
       if (key === 'label') return syncCatalogRowLabel(item)
       if (key === 'rowsImported') return item.rowsImported ?? -1
       if (key === 'importedAt') return item.importedAt ?? ''
+      if (key === 'syncedAt') return item.syncedAt ?? item.importedAt ?? ''
       if (key === 'portalUpdatedAt') return item.portalUpdatedAt ?? ''
       return (item as Record<string, unknown>)[key]
     },
@@ -431,19 +458,73 @@ async function syncPosMedicamentos() {
   await runSyncPos()
 }
 
+async function runSyncPmv(): Promise<boolean> {
+  pmvSyncState.value = { loading: true, message: 'Sincronizando…', ok: null }
+
+  const { data, error: err } = await fetchApi<{
+    ok: boolean
+    message?: string
+    rowsImported?: number
+  }>('/integrations/external/socrata/sync-invimaf-pmv', {
+    method: 'POST',
+    body: { replaceExisting: true },
+  })
+
+  if (err) {
+    pmvSyncState.value = { loading: false, message: err, ok: false }
+    error.value = err
+    return false
+  }
+
+  pmvSyncState.value = {
+    loading: false,
+    message: data?.message ?? 'Completado',
+    ok: data?.ok ?? false,
+  }
+
+  if (data?.ok) {
+    syncMsg.value = data.message ?? 'Precios PMV actualizados'
+    await loadSyncCatalog()
+    if (mainTab.value === 'pmv') {
+      await loadPmv(false)
+      await loadPmvBatches()
+    }
+    return true
+  }
+
+  return false
+}
+
+async function syncPmvPrices() {
+  if (
+    !confirm(
+      `¿Sincronizar catálogo «Precios PMV» desde datos.gov.co?\n\n` +
+        `Dataset: nauz-qkjw\n` +
+        'Se reemplazan todos los registros PMV locales. Puede tardar varios minutos.',
+    )
+  ) {
+    return
+  }
+
+  syncMsg.value = ''
+  error.value = ''
+  await runSyncPmv()
+}
+
 async function syncAllSequential() {
   if (syncAllRunning.value || syncLoadingAny.value) return
 
   const listSummary = INVIMA_LIST_TYPE_ORDER.map(
     (lt, i) => `${i + 1}. ${listLabels[lt] ?? lt}`,
   ).join('\n')
-  const totalSteps = INVIMA_LIST_TYPE_ORDER.length + 2
+  const totalSteps = INVIMA_LIST_TYPE_ORDER.length + 3
 
   if (
     !confirm(
       `¿Sincronizar los ${totalSteps} catálogos uno tras otro?\n\n` +
         `${listSummary}\n` +
         `${INVIMA_LIST_TYPE_ORDER.length + 1}. Medicamentos POS\n` +
+        `${INVIMA_LIST_TYPE_ORDER.length + 2}. Precios PMV\n` +
         `${totalSteps}. Medicamentos Krystalos\n\n` +
         'El proceso puede tardar varios minutos. Se detendrá si un catálogo falla.',
     )
@@ -494,6 +575,21 @@ async function syncAllSequential() {
 
   completed++
   syncAllProgress.value = `${completed + 1}/${total}`
+  syncMsg.value = `Sincronizando ${completed + 1} de ${total}: Precios PMV…`
+
+  const pmvOk = await runSyncPmv()
+  if (!pmvOk) {
+    syncMsg.value =
+      completed > 0
+        ? `Detenido en «Precios PMV». ${completed} catálogo${completed === 1 ? '' : 's'} completado${completed === 1 ? '' : 's'}.`
+        : 'Error al sincronizar «Precios PMV».'
+    syncAllRunning.value = false
+    syncAllProgress.value = ''
+    return
+  }
+
+  completed++
+  syncAllProgress.value = `${completed + 1}/${total}`
   syncMsg.value = `Sincronizando ${completed + 1} de ${total}: Medicamentos Krystalos…`
 
   const krystalosOk = await runSyncKrystalos(false)
@@ -509,6 +605,15 @@ async function syncAllSequential() {
 
   completed++
   syncMsg.value = `Los ${completed} catálogos se sincronizaron correctamente.`
+  await fetchApi('/integrations/external/socrata/record-full-sync', {
+    method: 'POST',
+    body: {
+      ok: true,
+      stepsCompleted: completed,
+      totalSteps: total,
+      message: syncMsg.value,
+    },
+  })
   await loadSyncCatalog()
   await search()
   syncAllRunning.value = false
@@ -761,6 +866,11 @@ function formatPmvCell(col: string, value: unknown): string {
   if (pmvPriceColumns.includes(col)) return formatPmvPrice(value)
   if (col === 'fechaInicioVigencia') return formatInvimaDate(String(value)) ?? String(value)
   return String(value)
+}
+
+function formatPmvBatchSource(filename: string): string {
+  if (filename.startsWith('socrata:')) return 'API / Automático'
+  return 'Excel'
 }
 
 async function loadPmvBatches() {
@@ -1388,6 +1498,16 @@ async function exportSyncExcel() {
         value: (r) => formatBatchDate(r.importedAt ?? undefined),
       },
       {
+        key: 'syncedAt',
+        label: 'Última sincronización',
+        value: (r) => formatBatchDate(r.syncedAt ?? r.importedAt ?? undefined),
+      },
+      {
+        key: 'syncSource',
+        label: 'Origen sync',
+        value: (r) => formatSyncSource(r.syncSource ?? undefined),
+      },
+      {
         key: 'portalUpdatedAt',
         label: 'Actualización portal',
         value: (r) =>
@@ -1674,7 +1794,26 @@ async function exportSyncExcel() {
       class="rounded-2xl border border-slate-200 bg-white shadow-lg shadow-slate-200/50 overflow-hidden flex flex-col flex-1 min-h-0"
     >
       <div class="bg-gradient-to-r from-indigo-900 via-indigo-800 to-slate-800 px-4 py-3 flex flex-wrap items-center justify-between gap-2">
-        <h3 class="text-white font-semibold text-sm">Sincronización (administrador)</h3>
+        <div>
+          <h3 class="text-white font-semibold text-sm">Sincronización (administrador)</h3>
+          <p v-if="lastFullSync?.syncedAt" class="text-xs text-indigo-100 mt-1">
+            Última sincronización completa:
+            <strong class="text-white">{{ formatBatchDate(lastFullSync.syncedAt) }}</strong>
+            <span v-if="formatSyncSource(lastFullSync.source)" class="text-indigo-200">
+              · {{ formatSyncSource(lastFullSync.source) }}
+            </span>
+            <span
+              v-if="lastFullSync.ok === false"
+              class="ml-1 text-amber-200"
+              :title="lastFullSync.message ?? undefined"
+            >
+              (incompleta)
+            </span>
+          </p>
+          <p v-else class="text-xs text-indigo-200/80 mt-1">
+            Aún no hay registro de una sincronización completa de los 7 catálogos.
+          </p>
+        </div>
         <div class="flex flex-wrap items-center gap-2 ml-auto">
           <p v-if="syncMsg" class="text-xs text-emerald-200 max-w-md text-right">
             {{ syncMsg }}
@@ -1725,7 +1864,7 @@ async function exportSyncExcel() {
           </thead>
           <tbody class="divide-y divide-slate-100">
             <tr v-if="syncCatalogLoading && !syncCatalog.length">
-              <td colspan="7" class="px-4 py-8 text-center text-slate-400 text-sm">
+              <td colspan="8" class="px-4 py-8 text-center text-slate-400 text-sm">
                 Consultando estado de sincronización…
               </td>
             </tr>
@@ -1733,7 +1872,7 @@ async function exportSyncExcel() {
               v-for="item in syncCatalogDisplay"
               :key="item.key"
               class="hover:bg-indigo-50/30 transition-colors"
-              :class="item.key === 'POS' || item.key === 'KRYSTALOS' ? 'border-t border-slate-200' : ''"
+              :class="item.key === 'POS' || item.key === 'PMV' || item.key === 'KRYSTALOS' ? 'border-t border-slate-200' : ''"
             >
               <td class="px-4 py-3.5 font-medium text-slate-900">
                 {{ syncCatalogRowLabel(item) }}
@@ -1749,6 +1888,15 @@ async function exportSyncExcel() {
               </td>
               <td class="px-4 py-3.5 text-slate-600 whitespace-nowrap">
                 {{ formatBatchDate(item.importedAt ?? undefined) }}
+              </td>
+              <td class="px-4 py-3.5 text-slate-600 whitespace-nowrap">
+                <span>{{ formatBatchDate(item.syncedAt ?? item.importedAt ?? undefined) }}</span>
+                <span
+                  v-if="formatSyncSource(item.syncSource ?? undefined)"
+                  class="block text-[10px] text-slate-400 mt-0.5"
+                >
+                  {{ formatSyncSource(item.syncSource ?? undefined) }}
+                </span>
               </td>
               <td class="px-4 py-3.5 text-slate-600 whitespace-nowrap">
                 <template v-if="item.key === 'KRYSTALOS'">
@@ -1809,6 +1957,25 @@ async function exportSyncExcel() {
                   </span>
                   <span v-else class="text-xs text-amber-700">Sin cargar</span>
                 </template>
+                <template v-else-if="item.key === 'PMV'">
+                  <span
+                    v-if="pmvSyncState.loading"
+                    class="text-xs text-indigo-600 font-medium"
+                  >
+                    Sincronizando…
+                  </span>
+                  <span
+                    v-else-if="pmvSyncState.message"
+                    class="text-xs"
+                    :class="pmvSyncState.ok === false ? 'text-red-600' : 'text-emerald-700'"
+                  >
+                    {{ pmvSyncState.message }}
+                  </span>
+                  <span v-else-if="item.importedAt" class="text-xs text-slate-400">
+                    Al día
+                  </span>
+                  <span v-else class="text-xs text-amber-700">Sin cargar</span>
+                </template>
                 <template v-else-if="item.listType">
                   <span
                     v-if="syncState[item.listType]?.loading"
@@ -1847,6 +2014,15 @@ async function exportSyncExcel() {
                   @click="syncPosMedicamentos"
                 >
                   {{ posSyncState.loading ? '…' : 'Sincronizar' }}
+                </button>
+                <button
+                  v-else-if="item.key === 'PMV'"
+                  type="button"
+                  class="inline-flex items-center justify-center min-w-[6.5rem] bg-indigo-600 hover:bg-indigo-500 text-white px-3 py-1.5 rounded-lg text-xs font-medium disabled:opacity-50 transition"
+                  :disabled="syncLoadingAny"
+                  @click="syncPmvPrices"
+                >
+                  {{ pmvSyncState.loading ? '…' : 'Sincronizar' }}
                 </button>
                 <button
                   v-else-if="item.listType"
@@ -2617,6 +2793,7 @@ async function exportSyncExcel() {
             >
               · {{ pmvBatch.rowsImported.toLocaleString() }} filas
               · {{ formatBatchDate(pmvBatch.importedAt) }}
+              · {{ formatPmvBatchSource(pmvBatch.sourceFilename) }}
             </span>
             <span
               v-if="pmvImportMsg"

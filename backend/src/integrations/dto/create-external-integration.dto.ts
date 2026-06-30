@@ -33,6 +33,7 @@ export enum SocrataApiVersionDto {
 export enum IntegrationSyncTargetDto {
   NONE = 'NONE',
   INVIMA_REGISTROS = 'INVIMA_REGISTROS',
+  INVIMA_PMV = 'INVIMA_PMV',
 }
 
 export enum InvimaListTypeDto {

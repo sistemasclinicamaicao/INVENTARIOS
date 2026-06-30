@@ -408,12 +408,12 @@ export class InvimaAlertService {
     };
   }
 
-  async runDailyInvimaJob() {
+  async runDailyInvimaJob(source: 'cron' | 'api' = 'cron') {
     const startedAt = new Date();
     this.logger.log('INVIMA daily job: iniciando sincronización de catálogos…');
 
     const syncResult =
-      await this.externalIntegrations.syncAllCatalogsSequential(true);
+      await this.externalIntegrations.syncAllCatalogsSequential(true, source);
 
     if (!syncResult.ok) {
       this.logger.warn(`INVIMA daily job: sincronización falló — ${syncResult.message}`);
