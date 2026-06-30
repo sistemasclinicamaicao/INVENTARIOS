@@ -28,6 +28,10 @@ import {
   resolveInvimaSyncCron,
 } from '../workers/invima-sync-cron.util';
 
+/** Solo UUID en :id; evita que rutas estáticas (sync-schedule, sync-diagnostics, etc.) caigan en external/:id. */
+const EXT_INTEGRATION_ID =
+  ':id([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})';
+
 @ApiTags('integrations')
 @Controller('integrations')
 export class IntegrationsController {
@@ -290,13 +294,13 @@ export class IntegrationsController {
   }
 
   @RequirePermissions('admin.users')
-  @Get('external/:id')
+  @Get(`external/${EXT_INTEGRATION_ID}`)
   getExternal(@Param('id') id: string) {
     return this.externalIntegrations.getById(id);
   }
 
   @RequirePermissions('admin.users')
-  @Patch('external/:id')
+  @Patch(`external/${EXT_INTEGRATION_ID}`)
   updateExternal(
     @Param('id') id: string,
     @Body() dto: UpdateExternalIntegrationDto,
@@ -305,19 +309,19 @@ export class IntegrationsController {
   }
 
   @RequirePermissions('admin.users')
-  @Delete('external/:id')
+  @Delete(`external/${EXT_INTEGRATION_ID}`)
   removeExternal(@Param('id') id: string) {
     return this.externalIntegrations.remove(id);
   }
 
   @RequirePermissions('admin.users')
-  @Post('external/:id/test-connection')
+  @Post(`external/${EXT_INTEGRATION_ID}/test-connection`)
   testConnection(@Param('id') id: string) {
     return this.externalIntegrations.testConnection(id);
   }
 
   @RequirePermissions('admin.users')
-  @Get('external/:id/poll/purchase-orders/:number')
+  @Get(`external/${EXT_INTEGRATION_ID}/poll/purchase-orders/:number`)
   pollPurchaseOrder(
     @Param('id') id: string,
     @Param('number') number: string,
@@ -326,19 +330,19 @@ export class IntegrationsController {
   }
 
   @RequirePermissions('admin.users')
-  @Get('external/:id/rest/preview')
+  @Get(`external/${EXT_INTEGRATION_ID}/rest/preview`)
   previewRest(@Param('id') id: string) {
     return this.externalIntegrations.previewRestQuery(id);
   }
 
   @RequirePermissions('admin.users')
-  @Get('external/:id/socrata/preview')
+  @Get(`external/${EXT_INTEGRATION_ID}/socrata/preview`)
   previewSocrata(@Param('id') id: string) {
     return this.externalIntegrations.previewSocrata(id);
   }
 
   @RequirePermissions('admin.users')
-  @Post('external/:id/socrata/sync')
+  @Post(`external/${EXT_INTEGRATION_ID}/socrata/sync`)
   syncSocrata(@Param('id') id: string, @Body() dto: SyncSocrataDto) {
     return this.externalIntegrations.syncSocrata(id, dto.replaceExisting !== false);
   }
