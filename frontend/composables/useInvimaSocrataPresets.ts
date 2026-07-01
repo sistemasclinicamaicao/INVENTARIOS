@@ -137,7 +137,6 @@ export const INVIMA_PMV_SOQL_COLUMNS = [
   'precio_maximo_de_venta_transaccion_final_comercial',
   'circular_cnpmdm',
   'fecha_de_inicio_vigencia_precio_maximo_de_venta',
-  'ajuste_julio_2025',
 ] as const
 
 export const INVIMA_PMV_SOQL = `SELECT ${INVIMA_PMV_SOQL_COLUMNS.join(', ')}`

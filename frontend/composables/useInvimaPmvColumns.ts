@@ -1,3 +1,5 @@
+import { formatQty } from '~/utils/locale-format'
+
 export const INVIMA_PMV_COLUMN_LABELS: Record<string, string> = {
   cum: 'CUM',
   idMr: 'ID MR',
@@ -23,5 +25,5 @@ export function formatPmvPrice(v: unknown): string {
   if (v == null || v === '') return '—';
   const n = Number(v);
   if (!Number.isFinite(n)) return String(v);
-  return n.toLocaleString('es-CO', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+  return formatQty(n, 2)
 }

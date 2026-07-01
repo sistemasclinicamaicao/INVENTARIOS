@@ -1,6 +1,8 @@
 <script setup lang="ts">
 definePageMeta({ layout: 'app' })
 
+import { formatDateTimeShort, formatInteger } from '~/utils/locale-format'
+
 interface ControlledProduct {
   id: string
   code: string
@@ -95,8 +97,7 @@ async function load() {
 }
 
 function formatDate(iso: string) {
-  const d = new Date(iso)
-  return d.toLocaleString('es-CO', { dateStyle: 'short', timeStyle: 'short' })
+  return formatDateTimeShort(iso)
 }
 
 onMounted(async () => {
@@ -191,7 +192,7 @@ onMounted(async () => {
               class="font-bold"
               :class="p.totalStock < p.minStock ? 'text-amber-600' : 'text-slate-800'"
             >
-              {{ p.totalStock.toLocaleString() }}
+              {{ formatInteger(p.totalStock) }}
             </span>
           </div>
         </div>

@@ -11,7 +11,11 @@ const emit = defineEmits<{
   'update:open': [value: boolean]
 }>()
 
-const printedAt = computed(() => formatDateTimeLatAm(new Date().toISOString()))
+const printedAt = ref('')
+
+onMounted(() => {
+  printedAt.value = formatDateTimeLatAm(new Date().toISOString())
+})
 
 function close() {
   emit('update:open', false)

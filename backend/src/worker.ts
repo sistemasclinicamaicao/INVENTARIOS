@@ -8,33 +8,6 @@ import {
   resolveInvimaSyncCron,
 } from './workers/invima-sync-cron.util';
 
-// #region agent log
-function agentDebugLog(
-  location: string,
-  message: string,
-  data: Record<string, unknown>,
-  hypothesisId: string,
-): void {
-  const payload = {
-    sessionId: 'f1fab5',
-    location,
-    message,
-    data,
-    hypothesisId,
-    timestamp: Date.now(),
-  };
-  console.log('[DEBUG f1fab5]', JSON.stringify(payload));
-  fetch('http://127.0.0.1:7556/ingest/8e591fd1-1e41-41a0-8746-b858bc2fbdf6', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Debug-Session-Id': 'f1fab5',
-    },
-    body: JSON.stringify(payload),
-  }).catch(() => {});
-}
-// #endregion
-
 async function clearRepeatableJobs(queue: Queue, names: string[]): Promise<void> {
   const repeatable = await queue.getRepeatableJobs();
   for (const job of repeatable) {
@@ -76,40 +49,20 @@ async function bootstrap() {
       },
     );
     const repeatable = await invimaQueue.getRepeatableJobs();
-    // #region agent log
-    agentDebugLog(
-      'worker.ts:bootstrap',
-      'INVIMA repeatable cron registered',
-      {
-        cron: invimaSchedule.cron,
-        tz: invimaSchedule.tz,
-        enabled: invimaSchedule.enabled,
-        serverUtc: new Date().toISOString(),
-        repeatable: repeatable.map((j) => ({
-          name: j.name,
-          cron: j.cron,
-          tz: j.tz,
-          nextUtc: j.next != null ? new Date(j.next).toISOString() : null,
-        })),
-      },
-      'H1-H4',
-    );
-    // #endregion
+    const invimaJob = repeatable.find((j) => j.name === 'daily');
+    const nextUtc =
+      invimaJob?.next != null ? new Date(invimaJob.next).toISOString() : 'desconocida';
     console.log(
-      `Worker started — HR sync cada 6 h; ${describeInvimaSyncSchedule(invimaSchedule.cron, invimaSchedule.tz)}`,
+      `Worker started — HR sync cada 6 h; ${describeInvimaSyncSchedule(invimaSchedule.cron, invimaSchedule.tz)}; próxima ejecución UTC: ${nextUtc}`,
     );
   } else {
-    // #region agent log
-    agentDebugLog(
-      'worker.ts:bootstrap',
-      'INVIMA cron disabled',
-      { enabled: false, serverUtc: new Date().toISOString() },
-      'H2',
-    );
-    // #endregion
     console.log(
       'Worker started — HR sync cada 6 h; INVIMA sync diario deshabilitado (INVIMA_SYNC_CRON_ENABLED=false)',
     );
   }
 }
-bootstrap();
+
+bootstrap().catch((err) => {
+  console.error('Worker bootstrap failed:', err);
+  process.exit(1);
+});

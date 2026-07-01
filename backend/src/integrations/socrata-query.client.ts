@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import {
   ExternalIntegrationRecord,
   IntegrationHttpClient,
@@ -42,6 +42,8 @@ const MAX_TOTAL_ROWS = 500_000;
 
 @Injectable()
 export class SocrataQueryClient {
+  private readonly logger = new Logger(SocrataQueryClient.name);
+
   constructor(private readonly http: IntegrationHttpClient) {}
 
   private normalizeRows(data: unknown): Record<string, unknown>[] {
@@ -188,31 +190,215 @@ export class SocrataQueryClient {
     return snippet ? `HTTP ${status}: ${snippet}` : `HTTP ${status}`;
   }
 
+  private isInvalidAppToken(status: number, message?: string): boolean {
+    if (status !== 403) return false;
+    const m = (message ?? '').toLowerCase();
+    return m.includes('invalid app_token') || m.includes('permission_denied');
+  }
+
+  shouldUsePublicDownload(status: number, message?: string): boolean {
+    if (this.isInvalidAppToken(status, message)) return true;
+    if (status !== 400) return false;
+    const m = (message ?? '').toLowerCase();
+    return m.includes('no such column') || m.includes('no such function');
+  }
+
+  /** Descarga pública datos.gov.co (sin App Token) cuando SODA3 rechaza el token. */
+  async probePublicDownload(
+    baseUrl: string,
+    datasetId: string,
+  ): Promise<{ ok: boolean; status: number; url: string; durationMs: number }> {
+    const start = Date.now();
+    const base = baseUrl.replace(/\/+$/, '');
+    const url = `${base}/api/views/${encodeURIComponent(datasetId)}/rows.csv?accessType=DOWNLOAD`;
+    try {
+      const res = await fetch(url, {
+        method: 'HEAD',
+        signal: AbortSignal.timeout(30_000),
+      });
+      return {
+        ok: res.ok,
+        status: res.status,
+        url,
+        durationMs: Date.now() - start,
+      };
+    } catch (e) {
+      return {
+        ok: false,
+        status: 0,
+        url,
+        durationMs: Date.now() - start,
+      };
+    }
+  }
+
+  async fetchPublicBulkRows(
+    baseUrl: string,
+    datasetId: string,
+  ): Promise<SocrataPageResult> {
+    const start = Date.now();
+    const base = baseUrl.replace(/\/+$/, '');
+    const url = `${base}/api/views/${encodeURIComponent(datasetId)}/rows.json?accessType=DOWNLOAD`;
+
+    try {
+      const res = await fetch(url, {
+        method: 'GET',
+        headers: { Accept: 'application/json' },
+        signal: AbortSignal.timeout(300_000),
+      });
+      const text = await res.text();
+      const durationMs = Date.now() - start;
+
+      if (!res.ok) {
+        return {
+          ok: false,
+          status: res.status,
+          durationMs,
+          url,
+          rows: [],
+          message: this.errorMessage(res.status, null, text),
+        };
+      }
+
+      let payload: unknown;
+      try {
+        payload = JSON.parse(text);
+      } catch {
+        return {
+          ok: false,
+          status: res.status,
+          durationMs,
+          url,
+          rows: [],
+          message: 'Descarga pública no es JSON válido',
+        };
+      }
+
+      const obj = (payload && typeof payload === 'object' ? payload : {}) as Record<
+        string,
+        unknown
+      >;
+      const meta = obj.meta as {
+        view?: { columns?: Array<{ fieldName?: string }> };
+      };
+      const fieldNames =
+        meta?.view?.columns?.map((c) => c.fieldName).filter(Boolean) ?? [];
+      const rawRows = Array.isArray(obj.data) ? (obj.data as unknown[]) : [];
+
+      const rows: Record<string, unknown>[] = [];
+      for (const raw of rawRows) {
+        if (!Array.isArray(raw)) continue;
+        const row: Record<string, unknown> = {};
+        for (let i = 0; i < fieldNames.length; i++) {
+          const name = fieldNames[i];
+          if (!name || name.startsWith(':')) continue;
+          row[name] = raw[i];
+        }
+        rows.push(row);
+      }
+
+      return {
+        ok: true,
+        status: res.status,
+        durationMs,
+        url,
+        rows,
+        message: undefined,
+      };
+    } catch (e) {
+      return {
+        ok: false,
+        status: 0,
+        durationMs: Date.now() - start,
+        url,
+        rows: [],
+        message: (e as Error).message,
+      };
+    }
+  }
+
+  async fetchPreviewRows(
+    cfg: SocrataIntegrationConfig,
+    limit: number,
+  ): Promise<SocrataPageResult & { usedPublicDownload?: boolean }> {
+    const previewQuery = this.ensureLimit(cfg.query, limit);
+    const page = await this.fetchPage({ ...cfg, query: previewQuery }, 1);
+    if (page.ok) {
+      return {
+        ...page,
+        rows: page.rows.slice(0, limit),
+        usedPublicDownload: false,
+      };
+    }
+
+    if (!this.shouldUsePublicDownload(page.status, page.message)) {
+      return page;
+    }
+
+    this.logger.warn(
+      `Socrata API falló (${cfg.datasetId}); vista previa vía descarga pública datos.gov.co`,
+    );
+    const bulk = await this.fetchPublicBulkRows(cfg.baseUrl, cfg.datasetId);
+    if (!bulk.ok) return bulk;
+    return {
+      ...bulk,
+      rows: bulk.rows.slice(0, limit),
+      usedPublicDownload: true,
+      message: undefined,
+    };
+  }
+
   async fetchAllPages(cfg: SocrataIntegrationConfig): Promise<{
     rows: Record<string, unknown>[];
     pages: number;
     lastUrl: string;
     ok: boolean;
     message?: string;
+    usedPublicDownload?: boolean;
   }> {
+    const first = await this.fetchPage(cfg, 1);
+    if (!first.ok && this.shouldUsePublicDownload(first.status, first.message)) {
+      this.logger.warn(
+        `App Token rechazado por Socrata (${cfg.datasetId}); usando descarga pública datos.gov.co`,
+      );
+      const bulk = await this.fetchPublicBulkRows(cfg.baseUrl, cfg.datasetId);
+      return {
+        rows: bulk.rows,
+        pages: 1,
+        lastUrl: bulk.url,
+        ok: bulk.ok,
+        message: bulk.ok
+          ? undefined
+          : bulk.message ??
+            'No se pudo descargar el dataset por la vía pública de datos.gov.co',
+        usedPublicDownload: true,
+      };
+    }
+
     const all: Record<string, unknown>[] = [];
     let pageNumber = 1;
-    let lastUrl = '';
-    let ok = true;
-    let message: string | undefined;
+    let lastUrl = first.url;
+    let ok = first.ok;
+    let message: string | undefined = first.ok ? undefined : first.message;
 
-    while (all.length < MAX_TOTAL_ROWS) {
-      const page = await this.fetchPage(cfg, pageNumber);
-      lastUrl = page.url;
-      if (!page.ok) {
-        ok = false;
-        message = page.message ?? `Error en página ${pageNumber}`;
-        break;
+    if (first.ok) {
+      all.push(...first.rows);
+      if (first.rows.length >= cfg.pageSize) {
+        pageNumber = 2;
+        while (all.length < MAX_TOTAL_ROWS) {
+          const page = await this.fetchPage(cfg, pageNumber);
+          lastUrl = page.url;
+          if (!page.ok) {
+            ok = false;
+            message = page.message ?? `Error en página ${pageNumber}`;
+            break;
+          }
+          if (!page.rows.length) break;
+          all.push(...page.rows);
+          if (page.rows.length < cfg.pageSize) break;
+          pageNumber++;
+        }
       }
-      if (!page.rows.length) break;
-      all.push(...page.rows);
-      if (page.rows.length < cfg.pageSize) break;
-      pageNumber++;
     }
 
     return { rows: all, pages: pageNumber, lastUrl, ok, message };

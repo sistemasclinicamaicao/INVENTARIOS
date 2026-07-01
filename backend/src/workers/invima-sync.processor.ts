@@ -11,34 +11,6 @@ export class InvimaSyncProcessor {
 
   @Process('daily')
   async handleDaily(job: Job) {
-    // #region agent log
-    fetch('http://127.0.0.1:7556/ingest/8e591fd1-1e41-41a0-8746-b858bc2fbdf6', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Debug-Session-Id': 'f1fab5',
-      },
-      body: JSON.stringify({
-        sessionId: 'f1fab5',
-        location: 'invima-sync.processor.ts:handleDaily',
-        message: 'INVIMA daily job triggered',
-        data: { jobId: job.id, serverUtc: new Date().toISOString() },
-        hypothesisId: 'H5',
-        timestamp: Date.now(),
-      }),
-    }).catch(() => {});
-    console.log(
-      '[DEBUG f1fab5]',
-      JSON.stringify({
-        sessionId: 'f1fab5',
-        location: 'invima-sync.processor.ts:handleDaily',
-        message: 'INVIMA daily job triggered',
-        data: { jobId: job.id, serverUtc: new Date().toISOString() },
-        hypothesisId: 'H5',
-        timestamp: Date.now(),
-      }),
-    );
-    // #endregion
     this.logger.log(`INVIMA sync job ${job.id} started`);
     const result = await this.invimaAlert.runDailyInvimaJob();
     const emails =
@@ -48,6 +20,13 @@ export class InvimaSyncProcessor {
     this.logger.log(
       `INVIMA sync job ${job.id} finished — ok=${result.ok} emails=${JSON.stringify(emails)}`,
     );
+    if (!result.ok) {
+      const message =
+        'syncResult' in result && result.syncResult && 'message' in result.syncResult
+          ? String(result.syncResult.message)
+          : 'sincronización falló';
+      throw new Error(`INVIMA daily job failed: ${message}`);
+    }
     return result;
   }
 }

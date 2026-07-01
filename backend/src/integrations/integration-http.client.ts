@@ -60,7 +60,8 @@ export class IntegrationHttpClient {
       secret = decryptSecret(integration.authSecretEnc, this.config);
     } catch {
       throw new BadRequestException(
-        'Token de integración inválido. Edite la integración y vuelva a guardar el API Key.',
+        'No se pudo descifrar el API Key guardado. Verifique INTEGRATION_SECRET_KEY del backend ' +
+          '(debe ser la misma con la que se guardó el token) o edite la integración y vuelva a pegar el App Token.',
       );
     }
 

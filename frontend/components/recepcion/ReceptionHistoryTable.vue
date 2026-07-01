@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { ReceptionHistoryDetail, ReceptionHistoryLine, ReceptionHistoryRow } from '~/types/reception-history'
-import { formatDateLatAm, formatDateTimeLatAm, formatQty } from '~/utils/locale-format'
+import { formatDateLatAm, formatDateTimeLatAm, formatInteger, formatQty } from '~/utils/locale-format'
 
 const props = defineProps<{
   rows: ReceptionHistoryRow[]
@@ -205,7 +205,7 @@ function lineLot(line: ReceptionHistoryLine) {
       v-if="total > 0"
       class="flex flex-wrap items-center justify-between gap-2 px-4 py-3 border-t border-slate-200 bg-white text-sm text-slate-600"
     >
-      <span>{{ total.toLocaleString() }} recepción{{ total === 1 ? '' : 'es' }}</span>
+      <span>{{ formatInteger(total) }} recepción{{ total === 1 ? '' : 'es' }}</span>
       <div class="flex items-center gap-2">
         <button
           type="button"

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { InternalRequisitionRow } from '~/types/requisition-internal'
+import { formatDateTimeShort } from '~/utils/locale-format'
 
 const props = withDefaults(
   defineProps<{
@@ -23,7 +24,7 @@ const statusClass: Record<string, string> = {
 }
 
 function formatDate(iso: string) {
-  return new Date(iso).toLocaleString('es-CO', { dateStyle: 'short', timeStyle: 'short' })
+  return formatDateTimeShort(iso)
 }
 </script>
 

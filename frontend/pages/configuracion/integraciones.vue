@@ -12,13 +12,18 @@ import {
   type InvimaListType,
   type InvimaSocrataPresetKey,
 } from '~/composables/useInvimaSocrataPresets'
+import { formatDateTimeLatAm, formatInteger } from '~/utils/locale-format'
 
 const { fetchApi } = useApi()
 const session = useSessionStore()
 const apiBase = useApiBase()
 
 type TabId = 'list' | 'new' | 'poll'
+type PageSection = 'integrations' | 'invima-sync'
+type InvimaSyncTabId = 'schedule' | 'diagnostics'
+const pageSection = ref<PageSection>('integrations')
 const activeTab = ref<TabId>('list')
+const invimaSyncTab = ref<InvimaSyncTabId>('schedule')
 
 const error = ref<string | null>(null)
 const msg = ref('')
@@ -69,6 +74,53 @@ interface SyncScheduleInfo {
 const syncSchedule = ref<SyncScheduleInfo | null>(null)
 const syncScheduleLoading = ref(false)
 const syncScheduleError = ref<string | null>(null)
+
+type IntegrationAuditItem = {
+  step: number
+  key: string
+  label: string
+  ready: boolean
+  isActive: boolean
+  hasSecret: boolean
+  integrationName: string | null
+  issue: string | null
+}
+
+type SyncDiagnosticsInfo = {
+  serverTimeUtc: string
+  serverTimeBogota: string
+  note: string
+  hints: string[]
+  backendEnv: SyncScheduleInfo & { humanSchedule: string }
+  integrationsAudit: {
+    allReady: boolean
+    items: IntegrationAuditItem[]
+  }
+  bull: {
+    redisError: string | null
+    jobCounts: Record<string, number>
+    repeatableJobs: Array<{
+      name: string
+      cron: string
+      tz: string | null
+      nextUtc: string | null
+      nextBogota: string | null
+    }>
+    recentCompleted: Array<{ id: string | number; finishedOn: number | null }>
+    recentFailed: Array<{ id: string | number; failedReason: string }>
+  }
+}
+
+const syncDiagnostics = ref<SyncDiagnosticsInfo | null>(null)
+const syncDiagnosticsLoading = ref(false)
+const syncDiagnosticsError = ref<string | null>(null)
+const dailyJobRunning = ref(false)
+const dailyJobResult = ref<{
+  ok: boolean
+  message?: string
+  syncResult?: { message?: string; stepsCompleted?: number; totalSteps?: number }
+} | null>(null)
+
 const editingId = ref<string | null>(null)
 const editingHasSecret = ref(false)
 const invimaPresetKey = ref<InvimaSocrataPresetKey>('VIGENTE')
@@ -340,9 +392,54 @@ async function loadSyncSchedule() {
   syncScheduleError.value = err ?? null
 }
 
+async function loadSyncDiagnostics() {
+  syncDiagnosticsLoading.value = true
+  syncDiagnosticsError.value = null
+  const { data, error: err } = await fetchApi<SyncDiagnosticsInfo>(
+    '/integrations/external/sync-diagnostics',
+  )
+  syncDiagnosticsLoading.value = false
+  if (err) {
+    syncDiagnosticsError.value = err
+    syncDiagnostics.value = null
+  } else {
+    syncDiagnostics.value = data ?? null
+  }
+}
+
+async function runDailyJobNow() {
+  if (
+    !confirm(
+      '¿Ejecutar el job diario INVIMA ahora?\n\nSincroniza los 7 catálogos en secuencia (equivalente al cron). Puede tardar muchos minutos.',
+    )
+  ) {
+    return
+  }
+  dailyJobRunning.value = true
+  dailyJobResult.value = null
+  error.value = null
+  const { data, error: err } = await fetchApi<typeof dailyJobResult.value>(
+    '/integrations/external/invima/run-daily-job',
+    { method: 'POST' },
+  )
+  dailyJobRunning.value = false
+  if (err) {
+    error.value = err
+    return
+  }
+  dailyJobResult.value = data ?? null
+  if (data?.ok) {
+    msg.value = 'Job diario INVIMA completado correctamente'
+  } else {
+    error.value =
+      data?.syncResult?.message ?? data?.message ?? 'El job diario falló en algún paso'
+  }
+  await loadSyncDiagnostics()
+}
+
 onMounted(async () => {
   if (!session.can('admin.users')) return
-  await Promise.all([loadIntegrations(), loadSyncSchedule()])
+  await Promise.all([loadIntegrations(), loadSyncSchedule(), loadSyncDiagnostics()])
   const { data } = await fetchApi<{ source: string; count: number }>('/integrations/hr/status')
   if (data) hrStatus.value = data
 })
@@ -463,7 +560,7 @@ async function runBulkInvimaSync() {
     durationMs: Date.now() - startMs,
     message:
       okCount === results.length
-        ? `Sincronizados ${results.length} listados INVIMA (${totalImported.toLocaleString()} filas en total)`
+        ? `Sincronizados ${results.length} listados INVIMA (${formatInteger(totalImported)} filas en total)`
         : `Completado con errores: ${okCount}/${results.length} listados OK`,
     results,
   }
@@ -565,12 +662,16 @@ async function deactivate(id: string) {
 
 async function testConnection(id: string) {
   error.value = null
+  msg.value = null
   const { data, error: err } = await fetchApi<{ ok: boolean; message: string }>(
     `/integrations/external/${id}/test-connection`,
     { method: 'POST' },
   )
   if (err) error.value = err
-  else if (data) msg.value = data.message
+  else if (data) {
+    if (data.ok) msg.value = data.message
+    else error.value = data.message
+  }
 }
 
 function openPoll(row: IntegrationRow) {
@@ -619,7 +720,7 @@ async function runRestPreview() {
   else if (data) {
     restPreview.value = data
     if (data.ok) {
-      msg.value = `Consulta: ${data.rowCount.toLocaleString()} fila(s)`
+      msg.value = `Consulta: ${formatInteger(data.rowCount)} fila(s)`
       error.value = null
     } else {
       error.value = data.message ?? `Error HTTP ${data.httpStatus}`
@@ -646,7 +747,9 @@ async function runSocrataPreview() {
   else if (data) {
     socrataPreview.value = data
     if (data.ok) {
-      msg.value = `Vista previa: ${data.rowCount} fila(s)`
+      msg.value = data.usedPublicDownload
+        ? `Vista previa: ${data.rowCount} fila(s) (descarga pública; token rechazado por datos.gov.co)`
+        : `Vista previa: ${data.rowCount} fila(s)`
       error.value = null
     } else {
       error.value = data.message ?? `Error HTTP ${data.httpStatus}`
@@ -732,14 +835,19 @@ async function testHis() {
       <p class="text-xs text-slate-500 uppercase tracking-wide">Configuraci?n</p>
       <h2 class="text-2xl font-bold text-slate-800">Integraciones API externas</h2>
       <p class="text-slate-500 text-sm mt-1">
-        ERP (sondeo OC), REST (consulta directa), datos abiertos Socrata (
-        <a
-          href="https://www.datos.gov.co/"
-          target="_blank"
-          rel="noopener"
-          class="text-orange-600 hover:underline"
-        >datos.gov.co</a>
-        ) e importaci?n INVIMA.
+        <template v-if="pageSection === 'integrations'">
+          ERP (sondeo OC), REST (consulta directa), datos abiertos Socrata (
+          <a
+            href="https://www.datos.gov.co/"
+            target="_blank"
+            rel="noopener"
+            class="text-orange-600 hover:underline"
+          >datos.gov.co</a>
+          ) e importaci?n INVIMA.
+        </template>
+        <template v-else>
+          Programaci?n del job diario INVIMA (worker / Redis) y diagn?stico del cron autom?tico.
+        </template>
       </p>
     </div>
 
@@ -764,90 +872,280 @@ async function testHis() {
         {{ msg }}
       </p>
 
-      <div
-        class="rounded-xl border-2 border-indigo-200 bg-indigo-50/60 p-4 shadow-sm space-y-3"
-      >
-        <div>
-          <h3 class="text-sm font-semibold text-indigo-950">
-            Sincronización automática INVIMA (hora del job diario)
-          </h3>
-          <p class="text-xs text-indigo-800/90 mt-1">
-            La hora <strong>no se configura en esta pantalla</strong>. Se define en las variables de
-            entorno del servicio <strong>worker</strong> en Easypanel y requiere redeploy del worker.
-          </p>
+      <div class="flex flex-wrap gap-2 border-b-2 border-slate-200 pb-2">
+        <button
+          type="button"
+          class="px-4 py-2.5 text-sm font-medium rounded-lg transition"
+          :class="pageSection === 'integrations' ? 'bg-orange-500 text-white shadow-sm' : 'text-slate-600 hover:bg-slate-100'"
+          @click="pageSection = 'integrations'"
+        >
+          Integraciones API
+        </button>
+        <button
+          type="button"
+          class="px-4 py-2.5 text-sm font-medium rounded-lg transition"
+          :class="pageSection === 'invima-sync' ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-600 hover:bg-slate-100'"
+          @click="pageSection = 'invima-sync'"
+        >
+          Sync autom?tica INVIMA
+        </button>
+      </div>
+
+      <!-- Sync automática INVIMA (worker / cron) -->
+      <div v-if="pageSection === 'invima-sync'" class="space-y-3">
+        <div class="flex flex-wrap gap-2 border-b border-slate-200 pb-2">
+          <button
+            type="button"
+            class="px-4 py-2 text-sm rounded-lg transition"
+            :class="invimaSyncTab === 'schedule' ? 'bg-indigo-600 text-white' : 'text-slate-600 hover:bg-slate-100'"
+            @click="invimaSyncTab = 'schedule'"
+          >
+            Programaci?n
+          </button>
+          <button
+            type="button"
+            class="px-4 py-2 text-sm rounded-lg transition"
+            :class="invimaSyncTab === 'diagnostics' ? 'bg-indigo-600 text-white' : 'text-slate-600 hover:bg-slate-100'"
+            @click="invimaSyncTab = 'diagnostics'"
+          >
+            Diagn?stico
+          </button>
         </div>
 
-        <p v-if="syncScheduleLoading" class="text-sm text-slate-600">
-          Consultando programación actual…
-        </p>
-
-        <template v-else-if="syncSchedule">
-          <div class="rounded-lg bg-white border border-indigo-100 px-3 py-2">
-            <p class="text-sm text-slate-800">
-              <span
-                class="inline-flex text-xs font-medium px-2 py-0.5 rounded mr-2"
-                :class="
-                  syncSchedule.enabled
-                    ? 'bg-emerald-100 text-emerald-800'
-                    : 'bg-slate-100 text-slate-600'
-                "
-              >
-                {{ syncSchedule.enabled ? 'Activa' : 'Desactivada' }}
-              </span>
-              <strong>Programada:</strong> {{ syncSchedule.humanSchedule }}
-            </p>
-            <p class="text-xs text-slate-500 font-mono mt-1">{{ syncSchedule.description }}</p>
-          </div>
-        </template>
-
-        <p
-          v-else-if="syncScheduleError"
-          class="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2"
+        <div
+          v-show="invimaSyncTab === 'schedule'"
+          class="bg-white rounded-xl border border-slate-200 p-6 shadow-sm space-y-4"
         >
-          No se pudo leer la programación del servidor
-          ({{ syncScheduleError }}). Redespliegue backend y worker con la versión reciente.
-        </p>
+          <div>
+            <h3 class="text-sm font-semibold text-slate-800">
+              Sincronización automática INVIMA (hora del job diario)
+            </h3>
+            <p class="text-xs text-slate-500 mt-1">
+              La hora <strong>no se configura en esta pantalla</strong>. Se define en las variables de
+              entorno del servicio <strong>worker</strong> en Easypanel y requiere redeploy del worker.
+            </p>
+          </div>
 
-        <div class="rounded-lg bg-white border border-indigo-100 px-3 py-2 text-xs text-slate-700 space-y-2">
-          <p class="font-medium text-slate-800">Cómo cambiar la hora (Easypanel → servicio worker)</p>
-          <table class="w-full text-left border-collapse">
-            <thead>
-              <tr class="text-slate-500 border-b">
-                <th class="py-1 pr-3 font-medium">Variable</th>
-                <th class="py-1 pr-3 font-medium">Ejemplo</th>
-                <th class="py-1 font-medium">Significado</th>
-              </tr>
-            </thead>
-            <tbody class="font-mono text-[11px]">
-              <tr class="border-b border-slate-50">
-                <td class="py-1.5 pr-3">INVIMA_SYNC_CRON</td>
-                <td class="py-1.5 pr-3">0 6 * * *</td>
-                <td class="py-1.5 font-sans">6:00 AM diario</td>
-              </tr>
-              <tr class="border-b border-slate-50">
-                <td class="py-1.5 pr-3">INVIMA_SYNC_CRON</td>
-                <td class="py-1.5 pr-3">49 14 * * *</td>
-                <td class="py-1.5 font-sans">2:49 PM diario</td>
-              </tr>
-              <tr class="border-b border-slate-50">
-                <td class="py-1.5 pr-3">INVIMA_SYNC_CRON_TZ</td>
-                <td class="py-1.5 pr-3">America/Bogota</td>
-                <td class="py-1.5 font-sans">Zona horaria</td>
-              </tr>
-              <tr>
-                <td class="py-1.5 pr-3">INVIMA_SYNC_CRON_ENABLED</td>
-                <td class="py-1.5 pr-3">true</td>
-                <td class="py-1.5 font-sans">Activar / desactivar job</td>
-              </tr>
-            </tbody>
-          </table>
-          <p class="text-slate-500 font-sans">
-            Formato cron: <code class="bg-slate-100 px-1 rounded">minuto hora día mes día_semana</code>.
-            La sync manual sigue en Maestros INVIMA → pestaña Sincronización.
+          <p v-if="syncScheduleLoading" class="text-sm text-slate-600">
+            Consultando programación actual…
           </p>
+
+          <template v-else-if="syncSchedule">
+            <div class="rounded-lg bg-slate-50 border border-slate-200 px-4 py-3">
+              <p class="text-sm text-slate-800">
+                <span
+                  class="inline-flex text-xs font-medium px-2 py-0.5 rounded mr-2"
+                  :class="
+                    syncSchedule.enabled
+                      ? 'bg-emerald-100 text-emerald-800'
+                      : 'bg-slate-200 text-slate-600'
+                  "
+                >
+                  {{ syncSchedule.enabled ? 'Activa' : 'Desactivada' }}
+                </span>
+                <strong>Programada:</strong> {{ syncSchedule.humanSchedule }}
+              </p>
+              <p class="text-xs text-slate-500 font-mono mt-1">{{ syncSchedule.description }}</p>
+            </div>
+          </template>
+
+          <p
+            v-else-if="syncScheduleError"
+            class="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2"
+          >
+            No se pudo leer la programación del servidor
+            ({{ syncScheduleError }}). Redespliegue backend y worker con la versión reciente.
+          </p>
+
+          <div class="rounded-lg border border-slate-200 px-4 py-3 text-xs text-slate-700 space-y-2">
+            <p class="font-medium text-slate-800">Cómo cambiar la hora (Easypanel → servicio worker)</p>
+            <table class="w-full text-left border-collapse">
+              <thead>
+                <tr class="text-slate-500 border-b">
+                  <th class="py-1 pr-3 font-medium">Variable</th>
+                  <th class="py-1 pr-3 font-medium">Ejemplo</th>
+                  <th class="py-1 font-medium">Significado</th>
+                </tr>
+              </thead>
+              <tbody class="font-mono text-[11px]">
+                <tr class="border-b border-slate-50">
+                  <td class="py-1.5 pr-3">INVIMA_SYNC_CRON</td>
+                  <td class="py-1.5 pr-3">0 6 * * *</td>
+                  <td class="py-1.5 font-sans">6:00 AM diario</td>
+                </tr>
+                <tr class="border-b border-slate-50">
+                  <td class="py-1.5 pr-3">INVIMA_SYNC_CRON</td>
+                  <td class="py-1.5 pr-3">49 14 * * *</td>
+                  <td class="py-1.5 font-sans">2:49 PM diario</td>
+                </tr>
+                <tr class="border-b border-slate-50">
+                  <td class="py-1.5 pr-3">INVIMA_SYNC_CRON_TZ</td>
+                  <td class="py-1.5 pr-3">America/Bogota</td>
+                  <td class="py-1.5 font-sans">Zona horaria</td>
+                </tr>
+                <tr>
+                  <td class="py-1.5 pr-3">INVIMA_SYNC_CRON_ENABLED</td>
+                  <td class="py-1.5 pr-3">true</td>
+                  <td class="py-1.5 font-sans">Activar / desactivar job</td>
+                </tr>
+              </tbody>
+            </table>
+            <p class="text-slate-500 font-sans">
+              Formato cron: <code class="bg-slate-100 px-1 rounded">minuto hora día mes día_semana</code>.
+              La sync manual sigue en Maestros INVIMA → pestaña Sincronización.
+            </p>
+          </div>
+        </div>
+
+        <div
+          v-show="invimaSyncTab === 'diagnostics'"
+          class="bg-white rounded-xl border border-slate-200 p-6 shadow-sm space-y-4"
+        >
+          <div class="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h3 class="text-sm font-semibold text-slate-800">
+                Diagnóstico sync automática (Redis / worker)
+              </h3>
+              <p class="text-xs text-slate-500 mt-1">
+                Comprueba si el cron está registrado en Redis y si las 7 integraciones están listas.
+              </p>
+            </div>
+            <button
+              type="button"
+              class="text-xs px-3 py-1.5 rounded-lg border border-slate-300 bg-white text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+              :disabled="syncDiagnosticsLoading"
+              @click="loadSyncDiagnostics"
+            >
+              {{ syncDiagnosticsLoading ? 'Actualizando…' : 'Actualizar' }}
+            </button>
+          </div>
+
+          <p v-if="syncDiagnosticsLoading && !syncDiagnostics" class="text-sm text-slate-600">
+            Consultando diagnóstico…
+          </p>
+
+          <p
+            v-else-if="syncDiagnosticsError"
+            class="text-xs text-red-800 bg-red-50 border border-red-200 rounded-lg px-3 py-2"
+          >
+            No se pudo cargar el diagnóstico ({{ syncDiagnosticsError }}).
+          </p>
+
+          <template v-else-if="syncDiagnostics">
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+              <div class="rounded-lg bg-slate-50 border border-slate-200 px-3 py-2">
+                <p class="text-slate-500">Hora servidor (Bogotá)</p>
+                <p class="font-medium text-slate-800">{{ syncDiagnostics.serverTimeBogota }}</p>
+              </div>
+              <div class="rounded-lg bg-slate-50 border border-slate-200 px-3 py-2">
+                <p class="text-slate-500">Cron en Redis</p>
+                <p
+                  v-if="syncDiagnostics.bull.repeatableJobs.length"
+                  class="font-medium text-emerald-800"
+                >
+                  {{ syncDiagnostics.bull.repeatableJobs[0].cron }}
+                  ({{ syncDiagnostics.bull.repeatableJobs[0].tz ?? 'UTC' }})
+                </p>
+                <p v-else class="font-medium text-red-700">No registrado — worker ausente o caído</p>
+                <p
+                  v-if="syncDiagnostics.bull.repeatableJobs[0]?.nextBogota"
+                  class="text-slate-600 mt-1"
+                >
+                  Próxima ejecución: {{ syncDiagnostics.bull.repeatableJobs[0].nextBogota }}
+                </p>
+              </div>
+            </div>
+
+            <ul
+              v-if="syncDiagnostics.hints.length"
+              class="text-xs space-y-1 text-amber-900 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 list-disc pl-5"
+            >
+              <li v-for="(hint, idx) in syncDiagnostics.hints" :key="idx">{{ hint }}</li>
+            </ul>
+
+            <div class="rounded-lg border border-slate-200 px-3 py-2">
+              <p class="text-xs font-medium text-slate-800 mb-2">
+                Integraciones job diario (7 pasos)
+                <span
+                  class="ml-2 inline-flex px-2 py-0.5 rounded text-[10px] font-semibold"
+                  :class="
+                    syncDiagnostics.integrationsAudit.allReady
+                      ? 'bg-emerald-100 text-emerald-800'
+                      : 'bg-red-100 text-red-800'
+                  "
+                >
+                  {{ syncDiagnostics.integrationsAudit.allReady ? 'Listas' : 'Incompletas' }}
+                </span>
+              </p>
+              <table class="w-full text-left text-[11px]">
+                <thead>
+                  <tr class="text-slate-500 border-b">
+                    <th class="py-1 pr-2">#</th>
+                    <th class="py-1 pr-2">Catálogo</th>
+                    <th class="py-1 pr-2">Integración</th>
+                    <th class="py-1">Estado</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr
+                    v-for="item in syncDiagnostics.integrationsAudit.items"
+                    :key="item.key"
+                    class="border-b border-slate-50"
+                  >
+                    <td class="py-1 pr-2">{{ item.step }}</td>
+                    <td class="py-1 pr-2">{{ item.label }}</td>
+                    <td class="py-1 pr-2">{{ item.integrationName ?? '—' }}</td>
+                    <td class="py-1">
+                      <span :class="item.ready ? 'text-emerald-700' : 'text-red-700'">
+                        {{ item.ready ? 'OK' : (item.issue ?? 'Falta') }}
+                      </span>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <div class="flex flex-wrap gap-2 items-center">
+              <button
+                type="button"
+                class="px-4 py-2 bg-orange-500 text-white rounded-lg text-sm disabled:opacity-50"
+                :disabled="dailyJobRunning"
+                @click="runDailyJobNow"
+              >
+                {{ dailyJobRunning ? 'Ejecutando job diario…' : 'Ejecutar job diario ahora' }}
+              </button>
+              <p class="text-xs text-slate-500">Equivalente manual al cron (source=api).</p>
+            </div>
+
+            <div
+              v-if="dailyJobResult"
+              class="text-sm p-3 rounded-lg"
+              :class="dailyJobResult.ok ? 'bg-green-50 text-green-800' : 'bg-red-50 text-red-800'"
+            >
+              {{
+                dailyJobResult.ok
+                  ? 'Job completado'
+                  : (dailyJobResult.syncResult?.message ?? dailyJobResult.message ?? 'Job falló')
+              }}
+            </div>
+
+            <div
+              v-if="syncDiagnostics.bull.recentFailed.length"
+              class="text-xs text-red-800 bg-red-50 border border-red-200 rounded-lg px-3 py-2"
+            >
+              <p class="font-medium">Jobs fallidos recientes (Bull)</p>
+              <ul class="mt-1 space-y-0.5 font-mono">
+                <li v-for="j in syncDiagnostics.bull.recentFailed" :key="j.id">
+                  #{{ j.id }}: {{ j.failedReason }}
+                </li>
+              </ul>
+            </div>
+          </template>
         </div>
       </div>
 
+      <!-- Integraciones API externas -->
+      <div v-if="pageSection === 'integrations'" class="space-y-4">
       <div class="flex flex-wrap gap-2 border-b border-slate-200 pb-2">
         <button
           type="button"
@@ -907,7 +1205,7 @@ async function testHis() {
                 <td class="py-2 pr-3">{{ authMethodLabels[row.authMethod] }}</td>
                 <td class="py-2 pr-3">{{ row.isActive ? 'S?' : 'No' }}</td>
                 <td class="py-2 pr-3 text-xs">
-                  {{ row.lastPollAt ? new Date(row.lastPollAt).toLocaleString() : '?' }}
+                  {{ row.lastPollAt ? formatDateTimeLatAm(row.lastPollAt) : '?' }}
                 </td>
                 <td class="py-2 space-x-2 whitespace-nowrap">
                   <button
@@ -1165,9 +1463,11 @@ async function testHis() {
               </p>
               <p
                 v-else-if="form.integrationKind === 'SOCRATA_OPEN_DATA'"
-                class="text-xs text-slate-400 mt-1"
+                class="text-xs text-amber-800 mt-1 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1.5"
               >
-                Use el valor de ?Token de la aplicaci?n?, no el ID de ?Claves API?.
+                En datos.gov.co use el <strong>Token de la aplicación</strong> (columna izquierda en Mis aplicaciones).
+                <strong>No</strong> pegue el «Token secreto». Si el token es rechazado (HTTP 403), el ERP puede sincronizar por descarga pública del dataset.
+                Header: <code>{{ form.authHeaderName || 'X-App-Token' }}</code>
               </p>
             </div>
           </template>
@@ -1285,7 +1585,7 @@ async function testHis() {
               <li v-for="r in bulkInvimaSyncResult.results" :key="r.integrationId">
                 {{ r.listType }} ? {{ r.integrationName }}:
                 <span :class="r.ok ? 'text-green-700' : 'text-red-700'">
-                  {{ r.ok ? `${r.rowsImported?.toLocaleString() ?? 0} filas` : r.message }}
+                  {{ r.ok ? `${formatInteger(r.rowsImported ?? 0)} filas` : r.message }}
                 </span>
               </li>
             </ul>
@@ -1360,7 +1660,7 @@ async function testHis() {
             <div class="text-xs text-slate-500 space-y-1">
               <p>
                 HTTP {{ restPreview.httpStatus }} ? {{ restPreview.durationMs }} ms ?
-                {{ restPreview.rowCount.toLocaleString() }} fila(s)
+                {{ formatInteger(restPreview.rowCount) }} fila(s)
               </p>
               <p v-if="restPreview.url" class="font-mono break-all">{{ restPreview.url }}</p>
               <p v-if="restPreview.message" class="text-amber-700">{{ restPreview.message }}</p>
@@ -1528,6 +1828,7 @@ async function testHis() {
           <p>ERP_USE_MOCK=true ? mock si el ERP no responde (desarrollo)</p>
         </div>
       </template>
+      </div>
     </template>
   </div>
 </template>

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { PoLineFulfillment, ReceptionLine, ReceptionLineAction } from '~/types/reception'
+import { formatQty } from '~/utils/locale-format'
 
 export type { ReceptionLine }
 
@@ -184,7 +185,7 @@ function isReceiveDisabled(line: ReceptionLine) {
             </span>
           </td>
           <td class="px-2 py-2 text-right text-slate-600 tabular-nums text-xs">
-            {{ line.unitPrice != null ? Number(line.unitPrice).toLocaleString('es-CO') : '—' }}
+            {{ line.unitPrice != null ? formatQty(Number(line.unitPrice), 2) : '—' }}
           </td>
           <td class="px-2 py-2">
             <span v-if="isCompleteLine(line)" class="block text-center text-xs text-slate-400">—</span>

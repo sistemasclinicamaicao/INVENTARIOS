@@ -24,6 +24,7 @@ const CHECKS = [
   { file: '027_medicamentos_pos_widen_columns.sql', table: 'medicamentos_pos_registros' },
   { file: '029_invima_pmv_registros.sql', table: 'invima_pmv_registros' },
   { file: '030_catalog_sync_status.sql', table: 'catalog_sync_status' },
+  { file: '031_precios_pmv_integration.sql', namePattern: 'PRECIOS PMV' },
 ];
 
 async function tableExists(client, table) {
@@ -42,9 +43,18 @@ async function columnExists(client, table, column) {
   return r.rowCount > 0;
 }
 
+async function integrationExists(client, namePattern) {
+  const r = await client.query(
+    `SELECT 1 FROM external_integrations WHERE name ILIKE $1 LIMIT 1`,
+    [namePattern],
+  );
+  return r.rowCount > 0;
+}
+
 async function isApplied(client, check) {
   if (check.table) return tableExists(client, check.table);
   if (check.column) return columnExists(client, check.column.table, check.column.name);
+  if (check.namePattern) return integrationExists(client, check.namePattern);
   return true;
 }
 
@@ -65,7 +75,7 @@ async function main() {
   const ordered = [...new Set(toApply)].sort();
 
   if (!ordered.length) {
-    console.log('\nNada pendiente en el rango 022-030.');
+    console.log('\nNada pendiente en el rango 022-031.');
     await client.end();
     return;
   }

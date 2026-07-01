@@ -7,6 +7,7 @@ import type {
   OcResolvedHeader,
 } from '~/types/erp-cxc'
 import type { PurchaseOrderDetail, PurchaseOrderLine, PurchaseOrderSummary } from '~/types/purchases'
+import { formatQty as formatQtyLocale } from '~/utils/locale-format'
 
 definePageMeta({ layout: 'app', pageTitle: 'Órdenes de compra' })
 
@@ -238,15 +239,11 @@ const localLinesTotal = computed(() =>
 )
 
 function formatMoney(n: number) {
-  return new Intl.NumberFormat('es-CO', {
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 2,
-  }).format(n)
+  return formatQtyLocale(n, 2)
 }
 
 function formatQty(n: number | null | undefined) {
-  if (n == null) return '—'
-  return new Intl.NumberFormat('es-CO', { maximumFractionDigits: 4 }).format(Number(n))
+  return formatQtyLocale(n, 4)
 }
 
 async function loadOrders() {

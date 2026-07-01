@@ -1,6 +1,8 @@
 <script setup lang="ts">
 definePageMeta({ layout: 'app' })
 
+import { formatInteger, formatQty } from '~/utils/locale-format'
+
 const { fetchApi } = useApi()
 
 type Warehouse = {
@@ -162,7 +164,7 @@ onMounted(() => load())
             >
               <span><strong>{{ inventory.summary.productCount }}</strong> productos</span>
               <span><strong>{{ inventory.summary.lineCount }}</strong> líneas (lote/ubicación)</span>
-              <span><strong>{{ inventory.summary.totalQty.toLocaleString() }}</strong> unidades</span>
+              <span><strong>{{ formatInteger(inventory.summary.totalQty) }}</strong> unidades</span>
             </div>
 
             <div class="p-4 border-b border-slate-100">
@@ -215,7 +217,7 @@ onMounted(() => load())
                     <td class="px-3 py-2">{{ row.lotNumber ?? '—' }}</td>
                     <td class="px-3 py-2">{{ row.expiresAt ?? '—' }}</td>
                     <td class="px-3 py-2 text-right font-medium tabular-nums">
-                      {{ row.qty.toLocaleString() }} {{ row.unit }}
+                      {{ formatQty(row.qty) }} {{ row.unit }}
                     </td>
                   </tr>
                 </tbody>

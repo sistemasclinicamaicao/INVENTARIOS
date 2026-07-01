@@ -2,6 +2,7 @@ import { InjectQueue } from '@nestjs/bull';
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { Queue } from 'bull';
+import { ExternalIntegrationsService } from './external-integrations.service';
 import {
   formatInvimaSyncCronHuman,
   resolveInvimaSyncCron,
@@ -15,39 +16,13 @@ function formatBogotaNow(): string {
   }).format(new Date());
 }
 
-// #region agent log
-function agentDebugLog(
-  location: string,
-  message: string,
-  data: Record<string, unknown>,
-  hypothesisId: string,
-): void {
-  const payload = {
-    sessionId: 'f1fab5',
-    location,
-    message,
-    data,
-    hypothesisId,
-    timestamp: Date.now(),
-  };
-  console.log('[DEBUG f1fab5]', JSON.stringify(payload));
-  fetch('http://127.0.0.1:7556/ingest/8e591fd1-1e41-41a0-8746-b858bc2fbdf6', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Debug-Session-Id': 'f1fab5',
-    },
-    body: JSON.stringify(payload),
-  }).catch(() => {});
-}
-// #endregion
-
 @Injectable()
 export class InvimaSyncDiagnosticsService {
   constructor(
     @InjectQueue('invima-sync')
     private readonly invimaQueue: Queue,
     private readonly config: ConfigService,
+    private readonly externalIntegrations: ExternalIntegrationsService,
   ) {}
 
   async getDiagnostics() {
@@ -125,7 +100,17 @@ export class InvimaSyncDiagnosticsService {
       );
     }
 
-    const result = {
+    const integrationsAudit =
+      await this.externalIntegrations.auditInvimaDailyJobIntegrations();
+
+    if (!integrationsAudit.allReady) {
+      const broken = integrationsAudit.items.filter((i) => !i.ready);
+      hints.push(
+        `Integraciones incompletas para el job diario (${broken.length}/7): ${broken.map((i) => i.label).join(', ')}`,
+      );
+    }
+
+    return {
       serverTimeUtc,
       serverTimeBogota,
       backendEnv: {
@@ -133,6 +118,7 @@ export class InvimaSyncDiagnosticsService {
         humanSchedule: formatInvimaSyncCronHuman(backendEnv.cron, backendEnv.tz),
       },
       note: 'INVIMA_SYNC_CRON en el backend solo informa la UI. El cron real lo registra el servicio worker al arrancar.',
+      integrationsAudit,
       bull: {
         redisError,
         jobCounts,
@@ -156,21 +142,5 @@ export class InvimaSyncDiagnosticsService {
       },
       hints,
     };
-
-    // #region agent log
-    agentDebugLog(
-      'invima-sync-diagnostics.service.ts:getDiagnostics',
-      'sync diagnostics queried',
-      {
-        invimaRepeatableCount: invimaRepeatable.length,
-        backendCron: backendEnv.cron,
-        serverTimeBogota,
-        jobCounts,
-      },
-      'H1-H4',
-    );
-    // #endregion
-
-    return result;
   }
 }

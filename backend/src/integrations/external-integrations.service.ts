@@ -63,6 +63,7 @@ import {
 import {
   INVIMA_PMV_DATASET_ID,
   INVIMA_PMV_INTEGRATION_NAME,
+  normalizeInvimaPmvSocrataQuery,
   sanitizeInvimaPmvSocrataRow,
 } from './invima-pmv.presets';
 import {
@@ -250,10 +251,24 @@ export class ExternalIntegrationsService {
       row.authMethod === 'BEARER' ||
       row.authMethod === 'BASIC';
     if (needsToken && !row.authSecretEnc) {
+      if (row.socrataDatasetId === INVIMA_PMV_DATASET_ID) {
+        this.logger.warn(
+          `Integración PMV "${row.name}" sin App Token; se intentará descarga pública datos.gov.co`,
+        );
+        return;
+      }
       throw new BadRequestException(
         'No hay App Token guardado. Edite la integración, pegue el token en X-App-Token y guarde.',
       );
     }
+  }
+
+  private normalizeSocrataQuery(datasetId: string | null, query: string): string {
+    const q = query.trim();
+    if (datasetId === INVIMA_PMV_DATASET_ID) {
+      return normalizeInvimaPmvSocrataQuery(q);
+    }
+    return q;
   }
 
   private socrataConfig(row: DbRow): SocrataIntegrationConfig {
@@ -268,7 +283,7 @@ export class ExternalIntegrationsService {
       baseUrl: row.baseUrl,
       datasetId: row.socrataDatasetId,
       apiVersion: (row.socrataApiVersion ?? 'SODA3') as 'SODA2' | 'SODA3',
-      query: row.socrataQuery,
+      query: this.normalizeSocrataQuery(row.socrataDatasetId, row.socrataQuery),
       pageSize: row.socrataPageSize || 1000,
       record: this.toRecord(row),
     };
@@ -365,7 +380,12 @@ export class ExternalIntegrationsService {
         poTemplate,
         kind === 'SOCRATA_OPEN_DATA' ? dto.socrataDatasetId?.trim() : null,
         kind === 'SOCRATA_OPEN_DATA' ? (dto.socrataApiVersion ?? 'SODA3') : null,
-        kind === 'SOCRATA_OPEN_DATA' ? dto.socrataQuery?.trim() : null,
+        kind === 'SOCRATA_OPEN_DATA'
+          ? this.normalizeSocrataQuery(
+              dto.socrataDatasetId?.trim() ?? null,
+              dto.socrataQuery?.trim() ?? '',
+            )
+          : null,
         kind === 'SOCRATA_OPEN_DATA' ? (dto.socrataPageSize ?? 1000) : 1000,
         kind === 'SOCRATA_OPEN_DATA' ? (dto.syncTarget ?? 'NONE') : 'NONE',
         dto.syncTarget === 'INVIMA_REGISTROS' ? dto.invimaListType : null,
@@ -456,7 +476,9 @@ export class ExternalIntegrationsService {
     }
     if (dto.socrataQuery !== undefined) {
       sets.push(`socrata_query = $${i++}`);
-      params.push(dto.socrataQuery.trim());
+      const datasetId =
+        dto.socrataDatasetId?.trim() ?? existing.socrataDatasetId ?? null;
+      params.push(this.normalizeSocrataQuery(datasetId, dto.socrataQuery));
     }
     if (dto.socrataPageSize !== undefined) {
       sets.push(`socrata_page_size = $${i++}`);
@@ -513,6 +535,27 @@ export class ExternalIntegrationsService {
       const cfg = this.socrataConfig(row);
       const testQuery = this.socrata.ensureLimit(cfg.query, 1);
       const page = await this.socrata.fetchPage({ ...cfg, query: testQuery }, 1);
+
+      if (!page.ok && this.socrata.shouldUsePublicDownload(page.status, page.message)) {
+        const probe = await this.socrata.probePublicDownload(cfg.baseUrl, cfg.datasetId);
+        await this.logPoll(
+          id,
+          'HEAD',
+          probe.url,
+          probe.status || 502,
+          probe.durationMs,
+        );
+        return {
+          ok: probe.ok,
+          httpStatus: probe.status,
+          durationMs: probe.durationMs,
+          url: probe.url,
+          message: probe.ok
+            ? 'App Token rechazado por datos.gov.co; descarga pública del dataset disponible (sync usará respaldo sin token). Regenera el token en tu perfil → Mis aplicaciones.'
+            : `HTTP ${probe.status}: no se pudo acceder al dataset`,
+        };
+      }
+
       await this.logPoll(
         id,
         cfg.apiVersion === 'SODA3' ? 'POST' : 'GET',
@@ -595,11 +638,10 @@ export class ExternalIntegrationsService {
     }
     const cfg = this.socrataConfig(row);
     const size = pageSize ?? Math.min(cfg.pageSize, 100);
-    const previewQuery = this.socrata.ensureLimit(cfg.query, size);
-    const page = await this.socrata.fetchPage({ ...cfg, query: previewQuery }, 1);
+    const page = await this.socrata.fetchPreviewRows(cfg, size);
     await this.logPoll(
       id,
-      cfg.apiVersion === 'SODA3' ? 'POST' : 'GET',
+      page.usedPublicDownload ? 'GET' : cfg.apiVersion === 'SODA3' ? 'POST' : 'GET',
       page.url,
       page.status,
       page.durationMs,
@@ -611,6 +653,10 @@ export class ExternalIntegrationsService {
         ? mapSocrataRowsToInvima(page.rows).slice(0, 5)
         : undefined;
 
+    const publicNote = page.usedPublicDownload
+      ? ' (muestra vía descarga pública; App Token rechazado por datos.gov.co)'
+      : '';
+
     return {
       ok: page.ok,
       httpStatus: page.status,
@@ -621,7 +667,12 @@ export class ExternalIntegrationsService {
       columns,
       rows: page.rows,
       sampleMapped,
-      message: page.ok ? undefined : page.message,
+      message: page.ok
+        ? page.rows.length
+          ? undefined
+          : `Sin filas en la muestra${publicNote}`
+        : page.message,
+      usedPublicDownload: page.usedPublicDownload === true,
     };
   }
 
@@ -858,27 +909,38 @@ export class ExternalIntegrationsService {
     ok: boolean,
     meta?: { stepsCompleted?: number; totalSteps?: number; message?: string },
   ): Promise<void> {
-    await this.dataSource.query(
-      `INSERT INTO catalog_sync_status
-         (sync_key, synced_at, source, ok, steps_completed, total_steps, message, updated_at)
-       VALUES ($1, NOW(), $2, $3, $4, $5, $6, NOW())
-       ON CONFLICT (sync_key) DO UPDATE SET
-         synced_at = EXCLUDED.synced_at,
-         source = EXCLUDED.source,
-         ok = EXCLUDED.ok,
-         steps_completed = EXCLUDED.steps_completed,
-         total_steps = EXCLUDED.total_steps,
-         message = EXCLUDED.message,
-         updated_at = NOW()`,
-      [
-        syncKey,
-        source,
-        ok,
-        meta?.stepsCompleted ?? null,
-        meta?.totalSteps ?? null,
-        meta?.message ?? null,
-      ],
-    );
+    try {
+      await this.dataSource.query(
+        `INSERT INTO catalog_sync_status
+           (sync_key, synced_at, source, ok, steps_completed, total_steps, message, updated_at)
+         VALUES ($1, NOW(), $2, $3, $4, $5, $6, NOW())
+         ON CONFLICT (sync_key) DO UPDATE SET
+           synced_at = EXCLUDED.synced_at,
+           source = EXCLUDED.source,
+           ok = EXCLUDED.ok,
+           steps_completed = EXCLUDED.steps_completed,
+           total_steps = EXCLUDED.total_steps,
+           message = EXCLUDED.message,
+           updated_at = NOW()`,
+        [
+          syncKey,
+          source,
+          ok,
+          meta?.stepsCompleted ?? null,
+          meta?.totalSteps ?? null,
+          meta?.message ?? null,
+        ],
+      );
+    } catch (e) {
+      const msg = (e as Error).message ?? '';
+      if (msg.includes('catalog_sync_status')) {
+        this.logger.warn(
+          `No se pudo registrar estado de sync (${syncKey}): aplique migración 030_catalog_sync_status.sql`,
+        );
+        return;
+      }
+      throw e;
+    }
   }
 
   async recordFullCatalogSync(
@@ -1057,6 +1119,189 @@ export class ExternalIntegrationsService {
             message: fullSync.message,
           }
         : null,
+    };
+  }
+
+  /** Auditoría de las 7 integraciones requeridas por el job diario INVIMA. */
+  async auditInvimaDailyJobIntegrations(): Promise<{
+    allReady: boolean;
+    items: Array<{
+      step: number;
+      key: string;
+      label: string;
+      ready: boolean;
+      isActive: boolean;
+      hasSecret: boolean;
+      integrationName: string | null;
+      issue: string | null;
+    }>;
+  }> {
+    type AuditItem = {
+      step: number;
+      key: string;
+      label: string;
+      ready: boolean;
+      isActive: boolean;
+      hasSecret: boolean;
+      integrationName: string | null;
+      issue: string | null;
+    };
+
+    const items: AuditItem[] = [];
+    let step = 0;
+
+    const pushSocrataInvima = async (listType: InvimaListType, label: string) => {
+      step += 1;
+      const [row] = await this.dataSource.query<DbRow[]>(
+        `SELECT name, is_active AS "isActive", auth_secret_enc AS "authSecretEnc"
+         FROM external_integrations
+         WHERE integration_kind = 'SOCRATA_OPEN_DATA'
+           AND sync_target = 'INVIMA_REGISTROS'
+           AND invima_list_type = $1
+         ORDER BY is_active DESC, created_at ASC
+         LIMIT 1`,
+        [listType],
+      );
+      if (!row) {
+        items.push({
+          step,
+          key: listType,
+          label,
+          ready: false,
+          isActive: false,
+          hasSecret: false,
+          integrationName: null,
+          issue: `Sin integración para listado ${listType}`,
+        });
+        return;
+      }
+      const hasSecret = !!row.authSecretEnc;
+      const ready = row.isActive && hasSecret;
+      items.push({
+        step,
+        key: listType,
+        label,
+        ready,
+        isActive: row.isActive,
+        hasSecret,
+        integrationName: row.name,
+        issue: !row.isActive
+          ? 'Integración inactiva'
+          : !hasSecret
+            ? 'Falta App Token'
+            : null,
+      });
+    };
+
+    for (const listType of INVIMA_LIST_TYPE_ORDER) {
+      await pushSocrataInvima(
+        listType,
+        INVIMA_LIST_TYPE_TITLES[listType] ?? listType,
+      );
+    }
+
+    const pushNamedSocrata = async (
+      key: string,
+      label: string,
+      datasetId: string,
+      namePattern: string,
+    ) => {
+      step += 1;
+      const [row] = await this.dataSource.query<DbRow[]>(
+        `SELECT name, is_active AS "isActive", auth_secret_enc AS "authSecretEnc"
+         FROM external_integrations
+         WHERE integration_kind = 'SOCRATA_OPEN_DATA'
+           AND (socrata_dataset_id = $1 OR name ILIKE $2)
+         ORDER BY is_active DESC, updated_at DESC
+         LIMIT 1`,
+        [datasetId, `%${namePattern}%`],
+      );
+      if (!row) {
+        items.push({
+          step,
+          key,
+          label,
+          ready: false,
+          isActive: false,
+          hasSecret: false,
+          integrationName: null,
+          issue: `Sin integración «${label}»`,
+        });
+        return;
+      }
+      const hasSecret = !!row.authSecretEnc;
+      const ready = row.isActive && hasSecret;
+      items.push({
+        step,
+        key,
+        label,
+        ready,
+        isActive: row.isActive,
+        hasSecret,
+        integrationName: row.name,
+        issue: !row.isActive
+          ? 'Integración inactiva'
+          : !hasSecret
+            ? 'Falta App Token'
+            : null,
+      });
+    };
+
+    await pushNamedSocrata(
+      'POS',
+      'Medicamentos POS',
+      MEDICAMENTOS_POS_DATASET_ID,
+      MEDICAMENTOS_POS_INTEGRATION_NAME,
+    );
+    await pushNamedSocrata(
+      'PMV',
+      'Precios PMV',
+      INVIMA_PMV_DATASET_ID,
+      INVIMA_PMV_INTEGRATION_NAME,
+    );
+
+    step += 1;
+    const [krystalosRow] = await this.dataSource.query<DbRow[]>(
+      `SELECT name, is_active AS "isActive", auth_secret_enc AS "authSecretEnc"
+       FROM external_integrations
+       WHERE integration_kind = 'REST_QUERY'
+         AND (base_url ILIKE '%/medicamentos%' OR name ILIKE '%MEDICAMENTOS KRYSTALOS%')
+       ORDER BY is_active DESC, updated_at DESC
+       LIMIT 1`,
+    );
+    if (!krystalosRow) {
+      items.push({
+        step,
+        key: 'KRYSTALOS',
+        label: 'Medicamentos Krystalos',
+        ready: false,
+        isActive: false,
+        hasSecret: false,
+        integrationName: null,
+        issue: 'Sin integración REST Krystalos',
+      });
+    } else {
+      const hasSecret = !!krystalosRow.authSecretEnc;
+      const ready = krystalosRow.isActive && hasSecret;
+      items.push({
+        step,
+        key: 'KRYSTALOS',
+        label: 'Medicamentos Krystalos',
+        ready,
+        isActive: krystalosRow.isActive,
+        hasSecret,
+        integrationName: krystalosRow.name,
+        issue: !krystalosRow.isActive
+          ? 'Integración inactiva'
+          : !hasSecret
+            ? 'Falta API Key'
+            : null,
+      });
+    }
+
+    return {
+      allReady: items.every((i) => i.ready),
+      items,
     };
   }
 
@@ -1890,8 +2135,8 @@ export class ExternalIntegrationsService {
       );
     }
     if (!row.authSecretEnc) {
-      throw new BadRequestException(
-        `Falta App Token en integración "${row.name}". Edítela y pegue el token.`,
+      this.logger.warn(
+        `Integración "${row.name}" sin App Token; sync PMV usará descarga pública si Socrata lo rechaza`,
       );
     }
 

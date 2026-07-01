@@ -262,6 +262,12 @@ export class IntegrationsController {
   }
 
   @RequirePermissions('admin.users')
+  @Get('external/sync-integrations-audit')
+  syncIntegrationsAudit() {
+    return this.externalIntegrations.auditInvimaDailyJobIntegrations();
+  }
+
+  @RequirePermissions('admin.users')
   @Post('external/socrata/sync-medicamentos-pos')
   syncMedicamentosPos(@Body() dto: SyncSocrataDto) {
     return this.externalIntegrations.syncMedicamentosPos(

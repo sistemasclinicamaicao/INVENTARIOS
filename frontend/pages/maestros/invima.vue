@@ -34,6 +34,7 @@ import {
   type ExcelExportColumn,
 } from '~/composables/useExcelExport'
 import { sortRowsByKey, useTableSort } from '~/composables/useTableSort'
+import { formatInteger, LOCALE, TIME_ZONE } from '~/utils/locale-format'
 
 definePageMeta({
   layout: 'app',
@@ -626,17 +627,16 @@ function batchForListType(listType: InvimaPresetListType) {
 
 function formatBatchDate(iso: string | undefined) {
   if (!iso) return '—'
-  try {
-    return new Intl.DateTimeFormat('es-CO', {
-      day: '2-digit',
-      month: 'short',
-      year: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-    }).format(new Date(iso))
-  } catch {
-    return iso
-  }
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return iso
+  return new Intl.DateTimeFormat(LOCALE, {
+    timeZone: TIME_ZONE,
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(d)
 }
 
 const olderBatches = computed(() => {
@@ -1277,7 +1277,7 @@ async function exportInvimaCumExcel() {
     const rows = await fetchAllPaginated<InvimaRow>({
       pageLimit: 100,
       onProgress: (loaded, total) => {
-        exportProgress.value = `${loaded.toLocaleString()}/${total.toLocaleString()}`
+        exportProgress.value = `${formatInteger(loaded)}/${formatInteger(total)}`
       },
       fetchPage: async (pageNum, limit) => {
         const { data } = await fetchApi<SearchResult>(
@@ -1314,7 +1314,7 @@ async function exportKrystalosExcel() {
     const rows = await fetchAllPaginated<Record<string, unknown>>({
       pageLimit: 200,
       onProgress: (loaded, total) => {
-        exportProgress.value = `${loaded.toLocaleString()}/${total.toLocaleString()}`
+        exportProgress.value = `${formatInteger(loaded)}/${formatInteger(total)}`
       },
       fetchPage: async (pageNum, limit) => {
         const params = new URLSearchParams()
@@ -1357,7 +1357,7 @@ async function exportPosExcel() {
     const rows = await fetchAllPaginated<Record<string, unknown>>({
       pageLimit: 100,
       onProgress: (loaded, total) => {
-        exportProgress.value = `${loaded.toLocaleString()}/${total.toLocaleString()}`
+        exportProgress.value = `${formatInteger(loaded)}/${formatInteger(total)}`
       },
       fetchPage: async (pageNum, limit) => {
         const params = new URLSearchParams()
@@ -1399,7 +1399,7 @@ async function exportPmvExcel() {
     const rows = await fetchAllPaginated<Record<string, unknown>>({
       pageLimit: 100,
       onProgress: (loaded, total) => {
-        exportProgress.value = `${loaded.toLocaleString()}/${total.toLocaleString()}`
+        exportProgress.value = `${formatInteger(loaded)}/${formatInteger(total)}`
       },
       fetchPage: async (pageNum, limit) => {
         const params = new URLSearchParams()
@@ -1460,7 +1460,7 @@ async function exportEstadosExcel() {
     const rows = await fetchAllPaginated<EstadoRow>({
       pageLimit: 200,
       onProgress: (loaded, total) => {
-        exportProgress.value = `${loaded.toLocaleString()}/${total.toLocaleString()}`
+        exportProgress.value = `${formatInteger(loaded)}/${formatInteger(total)}`
       },
       fetchPage: async (pageNum, limit) => {
         const params = new URLSearchParams()
@@ -1635,7 +1635,7 @@ async function exportSyncExcel() {
           :key="c.listType"
           class="bg-white border border-slate-200 px-2.5 py-1 rounded-full text-slate-600 shadow-sm"
         >
-          {{ listLabels[c.listType] ?? c.listType }}: {{ c.count.toLocaleString() }}
+          {{ listLabels[c.listType] ?? c.listType }}: {{ formatInteger(c.count) }}
         </span>
         <p v-if="error" class="text-red-600 ml-auto">{{ error }}</p>
       </div>
@@ -1643,7 +1643,7 @@ async function exportSyncExcel() {
       <div class="px-4 py-2.5 border-b border-slate-100 flex flex-wrap justify-between items-center gap-2 bg-white">
         <span class="text-sm font-medium text-slate-700">
           <template v-if="result">
-            {{ result.total.toLocaleString() }} resultado{{ result.total === 1 ? '' : 's' }}
+            {{ formatInteger(result.total) }} resultado{{ result.total === 1 ? '' : 's' }}
             <span v-if="listType" class="text-slate-500 font-normal">
               · {{ listLabels[listType] ?? listType }}
             </span>
@@ -1882,7 +1882,7 @@ async function exportSyncExcel() {
               </td>
               <td class="px-4 py-3.5 text-right tabular-nums text-slate-800">
                 <template v-if="item.rowsImported != null">
-                  {{ item.rowsImported.toLocaleString() }}
+                  {{ formatInteger(item.rowsImported) }}
                 </template>
                 <span v-else class="text-slate-400">—</span>
               </td>
@@ -2057,7 +2057,7 @@ async function exportSyncExcel() {
               >
                 <td class="px-4 py-2">{{ listLabels[b.listType] ?? b.listType }}</td>
                 <td class="px-4 py-2 font-mono">{{ b.sourceFilename }}</td>
-                <td class="px-4 py-2 text-right tabular-nums">{{ b.rowsImported?.toLocaleString() }}</td>
+                <td class="px-4 py-2 text-right tabular-nums">{{ formatInteger(b.rowsImported) }}</td>
                 <td class="px-4 py-2 whitespace-nowrap">{{ formatBatchDate(b.importedAt) }}</td>
               </tr>
             </tbody>
@@ -2138,7 +2138,7 @@ async function exportSyncExcel() {
             ]"
             @click="applyEstadosChip(chip.key)"
           >
-            {{ chip.label }}: {{ chip.count.toLocaleString() }}
+            {{ chip.label }}: {{ formatInteger(chip.count) }}
           </button>
         </div>
 
@@ -2258,11 +2258,11 @@ async function exportSyncExcel() {
         <div class="px-4 py-2.5 border-b border-slate-100 flex flex-wrap justify-between items-center gap-2 bg-white">
           <div class="text-sm text-slate-700">
             <template v-if="estadosResult?.total">
-              <span class="font-semibold">{{ estadosResult.total.toLocaleString() }}</span>
+              <span class="font-semibold">{{ formatInteger(estadosResult.total) }}</span>
               resultado{{ estadosResult.total === 1 ? '' : 's' }}
               <span v-if="estadosFilter !== 'ALL'" class="text-violet-600 font-normal">(filtrado)</span>
               <span class="text-slate-500 font-normal text-xs ml-2">
-                {{ estadosPageRange.from.toLocaleString() }}–{{ estadosPageRange.to.toLocaleString() }}
+                {{ formatInteger(estadosPageRange.from) }}–{{ formatInteger(estadosPageRange.to) }}
                 · pág. {{ estadosResult.page }}/{{ estadosTotalPages }}
               </span>
             </template>
@@ -2473,7 +2473,7 @@ async function exportSyncExcel() {
         <div class="px-4 py-2.5 border-b border-slate-100 flex flex-wrap justify-between items-center gap-2 bg-white">
           <span class="text-sm font-medium text-slate-700">
             <template v-if="krystalosResult">
-              {{ krystalosResult.total.toLocaleString() }} medicamento{{ krystalosResult.total === 1 ? '' : 's' }}
+              {{ formatInteger(krystalosResult.total) }} medicamento{{ krystalosResult.total === 1 ? '' : 's' }}
             </template>
             <template v-else-if="krystalosLoading">Consultando…</template>
             <template v-else>Sin datos</template>
@@ -2618,7 +2618,7 @@ async function exportSyncExcel() {
         <div class="px-4 py-2.5 border-b border-slate-100 flex flex-wrap justify-between items-center gap-2 bg-white">
           <span class="text-sm font-medium text-slate-700">
             <template v-if="posResult">
-              {{ posResult.total.toLocaleString() }} registro{{ posResult.total === 1 ? '' : 's' }} POS
+              {{ formatInteger(posResult.total) }} registro{{ posResult.total === 1 ? '' : 's' }} POS
             </template>
             <template v-else-if="posLoading">Buscando…</template>
             <template v-else>Sin búsqueda</template>
@@ -2781,7 +2781,7 @@ async function exportSyncExcel() {
           <div class="flex flex-wrap items-center gap-x-3 gap-y-1 min-w-0">
             <span class="text-sm font-medium text-slate-700 shrink-0">
               <template v-if="pmvResult">
-                {{ pmvResult.total.toLocaleString() }} registro{{ pmvResult.total === 1 ? '' : 's' }} PMV
+                {{ formatInteger(pmvResult.total) }} registro{{ pmvResult.total === 1 ? '' : 's' }} PMV
               </template>
               <template v-else-if="pmvLoading">Buscando…</template>
               <template v-else>Sin búsqueda</template>
@@ -2789,9 +2789,9 @@ async function exportSyncExcel() {
             <span
               v-if="pmvBatch"
               class="text-slate-500 truncate max-w-[28rem]"
-              :title="`${pmvBatch.sourceFilename} · ${pmvBatch.rowsImported.toLocaleString()} filas · ${formatBatchDate(pmvBatch.importedAt)}`"
+              :title="`${pmvBatch.sourceFilename} · ${formatInteger(pmvBatch.rowsImported)} filas · ${formatBatchDate(pmvBatch.importedAt)}`"
             >
-              · {{ pmvBatch.rowsImported.toLocaleString() }} filas
+              · {{ formatInteger(pmvBatch.rowsImported) }} filas
               · {{ formatBatchDate(pmvBatch.importedAt) }}
               · {{ formatPmvBatchSource(pmvBatch.sourceFilename) }}
             </span>
