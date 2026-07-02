@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Post, Query } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Query } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { InventoryService } from './inventory.service';
@@ -17,6 +17,14 @@ export class InventoryController {
   @Get('warehouses')
   getWarehouses() {
     return this.inventoryService.getWarehouses();
+  }
+
+  @Get('resolve-scan/:code')
+  resolveScan(
+    @Param('code') code: string,
+    @Query('warehouse') warehouse?: string,
+  ) {
+    return this.inventoryService.resolveScan(code, warehouse);
   }
 
   @Get('movements')

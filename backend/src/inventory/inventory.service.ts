@@ -140,4 +140,58 @@ export class InventoryService {
       ORDER BY w.name
     `);
   }
+
+  /** Resuelve producto por código interno o código de barras (PDA conteo / consulta). */
+  async resolveScan(code: string, warehouseCode?: string) {
+    const term = code.trim();
+    if (!term) {
+      return { product: null, balances: [] as unknown[] };
+    }
+
+    const [product] = await this.dataSource.query(
+      `SELECT DISTINCT p.id, p.code, p.name, p.requires_lote AS "requiresLote",
+              p.is_farmacia AS "isFarmacia"
+       FROM products p
+       LEFT JOIN product_barcodes pb ON pb.product_id = p.id
+       WHERE p.is_active = TRUE
+         AND (
+           UPPER(p.code) = UPPER($1)
+           OR pb.barcode = $1
+         )
+       LIMIT 1`,
+      [term],
+    );
+
+    if (!product) {
+      return { product: null, balances: [] };
+    }
+
+    const balanceParams: string[] = [product.id];
+    let warehouseFilter = '';
+    if (warehouseCode?.trim()) {
+      warehouseFilter = ' AND w.code = $2';
+      balanceParams.push(warehouseCode.trim());
+    }
+
+    const balances = await this.dataSource.query(
+      `SELECT w.code AS "warehouseCode", w.name AS "warehouseName",
+              l.id AS "lotId", l.lot_number AS "lotNumber", l.expires_at AS "expiresAt",
+              COALESCE(ib.qty, 0) AS qty
+       FROM inventory_balances ib
+       JOIN warehouses w ON w.id = ib.warehouse_id
+       LEFT JOIN lots l ON l.id = ib.lot_id
+       WHERE ib.product_id = $1${warehouseFilter}
+       ORDER BY w.name, l.expires_at NULLS LAST`,
+      balanceParams,
+    );
+
+    return {
+      product,
+      balances: balances.map((b: { qty: string; expiresAt: Date | null }) => ({
+        ...b,
+        qty: Number(b.qty),
+        expiresAt: b.expiresAt ? String(b.expiresAt).slice(0, 10) : null,
+      })),
+    };
+  }
 }

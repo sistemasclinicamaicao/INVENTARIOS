@@ -1,10 +1,7 @@
 <script setup lang="ts">
-import { useScanner } from '~/composables/useScanner'
-
 definePageMeta({ layout: 'pda' })
 
 const { fetchApi } = useApi()
-const { scanInput, handleKeydown } = useScanner(onReceive)
 const message = ref('')
 const error = ref('')
 
@@ -17,24 +14,20 @@ async function onReceive(code: string) {
   )
   if (err) error.value = err
   else if (data?.success) {
-    message.value = `Traslado ${code} recibido en satélite`
-    scanInput.value = ''
+    message.value = `Traslado ${code.trim()} recibido en satélite`
   }
 }
 </script>
 
 <template>
   <div class="space-y-4">
-    <h2 class="font-bold">Recibir traslado (satélite)</h2>
-    <input
-      v-model="scanInput"
-      type="text"
-      placeholder="Escanear TRF-..."
-      class="w-full p-3 rounded bg-slate-800 border border-slate-600"
-      @keydown="handleKeydown"
-    />
+    <PdaBackLink />
+    <h2 class="font-bold text-base">Recibir traslado (satélite)</h2>
+
+    <PdaScanField placeholder="Escanear TRF-…" @scan="onReceive" />
+
     <p class="text-xs text-slate-400">Confirma ingreso a bodega periférica</p>
-    <p v-if="message" class="text-green-400 text-sm">{{ message }}</p>
-    <p v-if="error" class="text-red-400 text-sm">{{ error }}</p>
+
+    <PdaStatusMessage :message="message" :error="error" />
   </div>
 </template>
