@@ -106,9 +106,9 @@ export class OtpService {
   }
 
   resolveOtpRecipient(userEmail: string): string {
+    if (this.isDeliverableEmail(userEmail)) return userEmail;
     const override = String(this.config.get('OTP_EMAIL_OVERRIDE') ?? '').trim();
     if (override && this.isDeliverableEmail(override)) return override;
-    if (this.isDeliverableEmail(userEmail)) return userEmail;
     const alertFallback = String(this.config.get('INVIMA_VENCIDOS_ALERT_TO') ?? '')
       .split(',')
       .map((e) => e.trim())
